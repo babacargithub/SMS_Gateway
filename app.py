@@ -14,10 +14,11 @@ from PySide6.QtWidgets import (
 from compose_page import ComposePage
 from contact_store import ContactStore
 from contacts_page import ContactsPage
-from message_sender import SimulatedMessageSender
+from message_sender import DongleMessageSender
 from outbox_page import OutboxPage
 from outbox_store import OutboxStore
 from devices_page import DevicesPage
+from history_page import HistoryPage
 from inbox_page import InboxPage
 from inbox_store import InboxStore
 from notification_sound import play_new_message_sound
@@ -47,11 +48,13 @@ class MainWindow(QMainWindow):
         self.contact_store = ContactStore()
         self.outbox_store = OutboxStore()
         self.outbox_store.recover_interrupted_sends()  # messages cut off mid-send last time become "Non confirmé"
-        self.message_sender = SimulatedMessageSender()  # swap for the dongle-backed sender when real sending exists
+        self.inbox_store = InboxStore()
+        self.dongle_monitor = DongleMonitor(self.inbox_store)
+        self.message_sender = DongleMessageSender(self.dongle_monitor)
         self.compose_page = ComposePage(self.contact_store, self.outbox_store)
         self.outbox_page = OutboxPage(self.outbox_store, self.message_sender)
         self.contacts_page = ContactsPage(self.contact_store)
-        self.inbox_store = InboxStore()
+        self.history_page = HistoryPage(self.outbox_store)
         self.inbox_page = InboxPage(self.inbox_store)
         dedicated_pages = {
             "Appareils": self.devices_page,
@@ -59,12 +62,12 @@ class MainWindow(QMainWindow):
             "Réception": self.inbox_page,
             "Contacts": self.contacts_page,
             "Boîte d'envoi": self.outbox_page,
+            "Historique": self.history_page,
         }
         self.content_stack = QStackedWidget()
         for section_name in SIDEBAR_SECTION_NAMES:
             self.content_stack.addWidget(dedicated_pages.get(section_name) or build_placeholder_page(section_name))
 
-        self.dongle_monitor = DongleMonitor(self.inbox_store)
         self.dongle_monitor.statuses_updated.connect(self.devices_page.show_statuses)
         self.devices_page.refresh_requested.connect(self.dongle_monitor.request_immediate_rescan)
         self.compose_page.messages_queued.connect(self.show_outbox)

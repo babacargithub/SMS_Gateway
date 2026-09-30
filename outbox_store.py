@@ -8,7 +8,9 @@ SENDING = "SENDING"
 SENT = "SENT"
 FAILED = "FAILED"
 UNKNOWN = "UNKNOWN"
+DELETE_CHUNK_SIZE = 500  # stays under SQLite's variable limit
 ALL_STATES = (WAITING, SENDING, SENT, FAILED, UNKNOWN)
+OUTBOX_STATES = (WAITING, SENDING, FAILED, UNKNOWN)  # the Outbox only shows outgoing messages; SENT ones live in the Historique
 
 CREATE_CAMPAIGNS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -47,6 +49,7 @@ class QueuedMessage:
     list_name: str
     created_at: str
     error_detail: str
+    updated_at: str = ""  # for a SENT message: when it was delivered
 
 
 @dataclass
@@ -82,17 +85,25 @@ class OutboxStore:
             )
         return campaign_id
 
-    def list_messages(self, state=None):
-        query = (
-            "SELECT id, state, recipient_name, phone_number, message_text, list_name, created_at, error_detail "
-            "FROM messages"
-        )
-        parameters = ()
-        if state:
-            query += " WHERE state = ?"
-            parameters = (state,)
+    def list_messages(self, states=ALL_STATES):
+        """Messages in any of the given states, oldest first."""
+        placeholders = ",".join("?" * len(states))
         with DatabaseTransaction(self.database_path) as connection:
-            rows = connection.execute(query + " ORDER BY id", parameters).fetchall()
+            rows = connection.execute(
+                "SELECT id, state, recipient_name, phone_number, message_text, list_name, created_at, error_detail, updated_at "
+                f"FROM messages WHERE state IN ({placeholders}) ORDER BY id",
+                tuple(states),
+            ).fetchall()
+        return [QueuedMessage(*row) for row in rows]
+
+    def list_sent_messages(self):
+        """The Historique: delivered messages, most recently sent first."""
+        with DatabaseTransaction(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT id, state, recipient_name, phone_number, message_text, list_name, created_at, error_detail, updated_at "
+                "FROM messages WHERE state = ? ORDER BY updated_at DESC, id DESC",
+                (SENT,),
+            ).fetchall()
         return [QueuedMessage(*row) for row in rows]
 
     def count_by_state(self):
@@ -112,6 +123,14 @@ class OutboxStore:
                 "UPDATE messages SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (SENDING, row[0])
             )
         return MessageToSend(*row)
+
+    def return_message_to_waiting(self, message_id):
+        """Only for a message that was certainly never handed to a dongle (e.g. no dongle ready)."""
+        with DatabaseTransaction(self.database_path) as connection:
+            connection.execute(
+                "UPDATE messages SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND state = ?",
+                (WAITING, message_id, SENDING),
+            )
 
     def finish_message(self, message_id, final_state, error_detail=""):
         with DatabaseTransaction(self.database_path) as connection:
@@ -133,5 +152,19 @@ class OutboxStore:
         """Remove the messages that have not been sent yet. Returns how many were removed."""
         with DatabaseTransaction(self.database_path) as connection:
             removed_count = connection.execute("DELETE FROM messages WHERE state = ?", (WAITING,)).rowcount
+            connection.execute("DELETE FROM campaigns WHERE id NOT IN (SELECT DISTINCT campaign_id FROM messages)")
+        return removed_count
+
+    def delete_messages(self, message_ids):
+        """Remove the chosen messages from the queue. A message being sent right now (SENDING) is never removed:
+        its outcome still has to be recorded. Returns how many were removed."""
+        removed_count = 0
+        with DatabaseTransaction(self.database_path) as connection:
+            for start in range(0, len(message_ids), DELETE_CHUNK_SIZE):
+                chunk = message_ids[start:start + DELETE_CHUNK_SIZE]
+                placeholders = ",".join("?" * len(chunk))
+                removed_count += connection.execute(
+                    f"DELETE FROM messages WHERE state <> ? AND id IN ({placeholders})", [SENDING, *chunk]
+                ).rowcount
             connection.execute("DELETE FROM campaigns WHERE id NOT IN (SELECT DISTINCT campaign_id FROM messages)")
         return removed_count

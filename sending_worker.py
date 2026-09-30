@@ -2,25 +2,29 @@
 
 Pause and stop never cut a message in half: the one being sent finishes first (a real SMS in flight cannot be
 taken back, and its outcome must be recorded), then the worker waits (pause) or ends (stop)."""
+import random
 import threading
 
 from PySide6.QtCore import QThread, Signal
 
 import outbox_store
+from message_sender import DONGLE_UNAVAILABLE
 
-GAP_BETWEEN_MESSAGES_SECONDS = 0.1  # simulation only; real sending will use a steady, slower rate
+# Steady, human-looking pace: prepaid SIMs that send too fast risk being blocked by the operator.
+GAP_BETWEEN_MESSAGES_SECONDS_RANGE = (5.0, 10.0)
 
 
 class SendingWorker(QThread):
     message_state_changed = Signal(int, str, str)   # message id, new state, error detail
     progress_changed = Signal(int, int)             # messages handled in this run, total for this run
+    dongle_unavailable = Signal(str)                # reason; the worker has paused itself and the message is back to WAITING
     run_finished = Signal(bool)                     # True if it ended because everything was handled, False if stopped
 
-    def __init__(self, outbox_store_instance, message_sender, gap_seconds=GAP_BETWEEN_MESSAGES_SECONDS):
+    def __init__(self, outbox_store_instance, message_sender, gap_seconds_range=GAP_BETWEEN_MESSAGES_SECONDS_RANGE):
         super().__init__()
         self.outbox_store = outbox_store_instance
         self.message_sender = message_sender
-        self.gap_seconds = gap_seconds
+        self.gap_seconds_range = gap_seconds_range
         self.stop_requested = threading.Event()
         self.may_continue = threading.Event()   # cleared while paused
         self.may_continue.set()
@@ -55,13 +59,22 @@ class SendingWorker(QThread):
                 final_state, error_detail = outbox_store.UNKNOWN, f"Erreur inattendue pendant l'envoi : {sending_error}"
             else:
                 final_state, error_detail = send_result.final_state, send_result.error_detail
+            if final_state == DONGLE_UNAVAILABLE:
+                # certainly not sent: put it back first in line and wait for the user to resume
+                self.outbox_store.return_message_to_waiting(message_to_send.message_id)
+                self.message_state_changed.emit(message_to_send.message_id, outbox_store.WAITING, "")
+                self.may_continue.clear()
+                self.dongle_unavailable.emit(error_detail)
+                continue
             self.outbox_store.finish_message(message_to_send.message_id, final_state, error_detail)
             self.message_state_changed.emit(message_to_send.message_id, final_state, error_detail)
 
             handled_count += 1
             still_waiting = self.outbox_store.count_by_state()[outbox_store.WAITING]
             self.progress_changed.emit(handled_count, handled_count + still_waiting)
-            if self.stop_requested.wait(self.gap_seconds):
+            if still_waiting == 0:
+                break
+            if self.stop_requested.wait(random.uniform(*self.gap_seconds_range)):
                 finished_everything = False
                 break
         self.run_finished.emit(finished_everything)

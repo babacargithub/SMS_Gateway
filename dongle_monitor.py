@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
 
 import usb.core
 from PySide6.QtCore import QThread, Signal
@@ -19,14 +20,49 @@ SWITCH_WAIT_SECONDS = 20
 RETRY_AFTER_ERROR_SECONDS = 10
 
 
+OUTCOME_SENT = "sent"
+OUTCOME_FAILED = "failed"            # the dongle or network definitely refused it
+OUTCOME_UNKNOWN = "unknown"          # no confirmation either way: it may have gone out
+OUTCOME_NO_DONGLE = "no_dongle"      # never handed to a dongle: certainly not sent, safe to try again later
+
+
+@dataclass
+class SendRequest:
+    """One message waiting for the monitor thread (the only owner of the USB dongles) to send it.
+    The caller blocks on `finished` and then reads `outcome` / `detail`."""
+    destination_number: str
+    message_text: str
+    outcome: str = ""
+    detail: str = ""
+    finished: threading.Event = field(default_factory=threading.Event)
+    _state_lock: threading.Lock = field(default_factory=threading.Lock)
+    _started: bool = False
+    _cancelled: bool = False
+
+    def try_start(self):
+        """Monitor side: False if the caller gave up before the send began (then nothing must be sent)."""
+        with self._state_lock:
+            if self._cancelled:
+                return False
+            self._started = True
+            return True
+
+    def cancel_if_not_started(self):
+        """Caller side: True if the send had not begun, so the message is certainly not sent."""
+        with self._state_lock:
+            if self._started:
+                return False
+            self._cancelled = True
+            return True
+
+    def finish(self, outcome, detail=""):
+        self.outcome, self.detail = outcome, detail
+        self.finished.set()
+
+
 class DongleMonitor(QThread):
     statuses_updated = Signal(list)
-    sms_send_finished = Signal(str, str, str)  # destination number, outcome, detail
     inbox_messages_received = Signal(int)  # how many new messages were stored in the database
-
-    OUTCOME_SENT = "sent"
-    OUTCOME_FAILED = "failed"
-    OUTCOME_UNKNOWN = "unknown"
 
     def __init__(self, inbox_store=None):
         super().__init__()
@@ -47,9 +83,11 @@ class DongleMonitor(QThread):
         self.wake_up_requested.set()
 
     def submit_text_message(self, destination_number, message_text):
-        """Called from the UI thread; the result arrives via sms_send_finished."""
-        self.pending_messages.put((destination_number, message_text))
+        """Called from any thread. Returns a SendRequest: wait on `.finished`, then read `.outcome` and `.detail`."""
+        send_request = SendRequest(destination_number, message_text)
+        self.pending_messages.put(send_request)
         self.wake_up_requested.set()
+        return send_request
 
     def stop(self):
         self.requestInterruption()
@@ -71,29 +109,39 @@ class DongleMonitor(QThread):
                 logging.exception("Dongle scan failed; retrying on next cycle")
             self.wake_up_requested.wait(SCAN_INTERVAL_MS / 1000)
             self.wake_up_requested.clear()
+        self._refuse_pending_messages()
         for connection in self.open_connections.values():
             connection.close()
 
     def _send_pending_messages(self):
         while not self.pending_messages.empty():
-            destination_number, message_text = self.pending_messages.get()
+            send_request = self.pending_messages.get()
+            if not send_request.try_start():
+                continue  # the caller gave up while it was queued
             ready_locations = [
                 location for location in self.open_connections
                 if self.current_statuses[location].state == dongle.STATE_READY
             ]
             if not ready_locations:
-                self.sms_send_finished.emit(destination_number, self.OUTCOME_FAILED, "Aucun dongle n'est prêt")
+                send_request.finish(OUTCOME_NO_DONGLE, "Aucun dongle n'est prêt")
                 continue
             connection = self.open_connections[ready_locations[0]]
             try:
-                connection.send_text_message(destination_number, message_text)
-                self.sms_send_finished.emit(destination_number, self.OUTCOME_SENT, "")
+                connection.send_text_message(send_request.destination_number, send_request.message_text)
+                send_request.finish(OUTCOME_SENT)
             except dongle.SendRejected as rejection:
-                self.sms_send_finished.emit(destination_number, self.OUTCOME_FAILED, str(rejection))
+                send_request.finish(OUTCOME_FAILED, str(rejection))
             except dongle.SendOutcomeUnknown as uncertainty:
-                self.sms_send_finished.emit(destination_number, self.OUTCOME_UNKNOWN, str(uncertainty))
+                send_request.finish(OUTCOME_UNKNOWN, str(uncertainty))
             except (usb.core.USBError, RuntimeError) as send_error:
-                self.sms_send_finished.emit(destination_number, self.OUTCOME_FAILED, str(send_error))
+                # failures after the text is written are turned into SendOutcomeUnknown by the device layer,
+                # so an error escaping from it happened before the text left: definitely not sent
+                send_request.finish(OUTCOME_FAILED, str(send_error))
+
+    def _refuse_pending_messages(self):
+        """The monitor is closing: nothing more will be sent, and waiting callers must not hang."""
+        while not self.pending_messages.empty():
+            self.pending_messages.get().finish(OUTCOME_NO_DONGLE, "L'application se ferme")
 
     def _drain_sim_inboxes(self):
         """Move every message from each ready SIM into the database, then free the SIM slots.

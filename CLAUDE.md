@@ -110,13 +110,17 @@ Desktop app (current):
   counts of empty values, messages over 160 characters or empty). Blocks Lancer on unknown variables / too long / empty.
 - `outbox_store.py` — SQLite `campaigns` + `messages` (recipient, number and final text are **copied**, so deleting a
   contact or list never changes the queue). States: `WAITING`, `SENDING`, `SENT`, `FAILED`, `UNKNOWN`.
-- `outbox_page.py` — Boîte d'envoi: **Envoyer / Pause (Reprendre) / Arrêter** on top, progress bar, "simulation" banner,
+- `outbox_page.py` — Boîte d'envoi: **Envoyer / Pause (Reprendre) / Arrêter** on top, progress bar,
   per-state counters, table (N°, state icon only with tooltip, recipient, number, message, list, date), state filter,
-  "Vider les messages en attente" (confirm, default Non). Rows update in place while sending; reloads when shown.
-- `message_sender.py` — the seam for delivery: `send(number, text) -> SendResult`. **`SimulatedMessageSender` is the only
-  implementation today** (random success/failure, nothing is sent; `is_simulation = True` shows the banner). Real
-  sending = a dongle-backed sender with the same interface; the worker and screens stay unchanged.
-- `sending_worker.py` — `SendingWorker(QThread)`: claims the oldest `WAITING` message (→ `SENDING`), sends, records
+  "Vider les messages en attente" (confirm, default Non). **Multi-select (Cmd/Shift-click, « Tout sélectionner ») + « Supprimer la sélection » / Delete key**
+  (confirm, default Non; a `SENDING` message is never deleted). **Envoyer asks for confirmation (default Non) before
+  really sending.** Rows update in place while sending; reloads when shown.
+- `message_sender.py` — the seam for delivery: `send(number, text) -> SendResult`. `DongleMessageSender` validates the number,
+  hands a `SendRequest` to the monitor thread (which owns the USB) and blocks for the outcome: `+CMGS` → SENT, definite
+  refusal → FAILED, anything unclear → UNKNOWN (never retried), no dongle ready → `DONGLE_UNAVAILABLE` (message goes back to
+  `WAITING`, worker pauses itself, page shows « En pause : … »). **Real sending is not yet verified with the dongle** —
+  the owner must test it (Claude never sends real SMS).
+- `sending_worker.py` — `SendingWorker(QThread)`: claims the oldest `WAITING` message (→ `SENDING`), sends, waits a random 5–10 s, records
   SENT/FAILED/UNKNOWN. Pause/stop never cut a message in half (the in-flight one finishes first); stop leaves the rest
   `WAITING`. Messages cut off by a crash (`SENDING` at startup) become `UNKNOWN` and are never resent automatically.
 - `devices_page.py` — table of dongles (state, IMEI, operator, signal bars + dBm, SIM, network, USB) and Refresh.
@@ -124,14 +128,15 @@ Desktop app (current):
   `send_text_message`, live status reading, `SendRejected` / `SendOutcomeUnknown`.
 - `dongle_monitor.py` — `DongleMonitor(QThread)`: scans USB every 3 s, auto-switches CD-ROM dongles,
   health check every 30 s (3 misses → reconnect), Refresh (`request_immediate_rescan`), and a send entry point
-  (`submit_text_message` → `sms_send_finished`) that **nothing calls yet** — the future dongle-backed sender will use it.
+  (`submit_text_message` → a `SendRequest` the caller waits on) used by `DongleMessageSender`; requests still queued when the monitor closes are refused.
   The scan loop catches and logs every exception so the thread can never die silently.
 - `sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
 - `received_sms_parser.py` — pure: parses `AT+CMGL="ALL"` (text mode + `AT+CSDH=1` for the DCS) into `ReceivedSms`; UCS2 bodies decoded.
 - `inbox_store.py` — SQLite `received_messages` (unique on sender+time+text, `is_read`); sender name looked up from contacts.
 - `inbox_page.py` — Réception: table (unread in bold), preview pane, selecting marks read, mark-all-read, delete (confirm). Sidebar shows `Réception (n)`.
 - `DongleMonitor._drain_sim_inboxes` — every scan cycle: read SIM → store in DB → only then `AT+CMGD` each slot; emits `inbox_messages_received` → `notification_sound.py` (afplay Glass.aiff). **Not yet verified with the real dongle.** Long SMS still arrive as separate parts (text mode; PDU reassembly still to do).
-- Historique is an empty placeholder for now.
+- `history_page.py` — Historique = the **sent** messages (`SENT`, same `messages` table, newest first, « Envoyé le » = `updated_at`), search,
+  multi-select delete. The Outbox shows only `OUTBOX_STATES` (WAITING, SENDING, FAILED, UNKNOWN): a message leaves it live the moment it is `SENT`.
 
 Scripts (still useful, run outside the app):
 - `huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).
@@ -176,10 +181,8 @@ Legacy (superseded by the desktop design, kept only as reference — mine it for
 1. ✅ App shell: sidebar with icons, Devices screen (state, IMEI, operator, signal, SIM, network, Refresh).
 2. ✅ Compose → queue: lists + template + Lancer → messages `WAITING` in the Outbox (nothing is sent yet).
 3. Privileged helper for the mode switch (so replug recovers without a manual `sudo`).
-4. Queue worker: ✅ simulated (Envoyer/Pause/Arrêter, states SENDING → SENT/FAILED). **Next: real sending** — a dongle-backed
-   `MessageSender` (steady 5–10 s rate, `+CMGS` → SENT, refusal → FAILED, no confirmation → UNKNOWN, dongle absent →
-   pause), plus a confirmation before the first real run. Then Historique.
-   (Outbox = the queue; Historique = archive of what was sent/received — confirm with the owner.)
+4. Queue worker: ✅ real sending through the dongle (5–10 s steady rate, confirmation before a run, pauses when no dongle) —
+   **awaiting the owner's first real test**. Historique (sent messages) ✅. Received messages stay in Réception.
 5. Contacts + import: ✅ named lists, Excel/CSV import, column mapping, `+221` normalization, duplicate/invalid
    report, rename/delete. Still to do: blacklist, edit a single contact, virtual table for 10k+ contacts.
 6. Campaigns extras: pause/resume/stop per campaign, sleep prevention, more variables (columns 3–10), multipart SMS.
