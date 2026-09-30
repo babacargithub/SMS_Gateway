@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from received_sms_parser import parse_sms_list_reply
+from ussd_codec import decode_ussd_reply, encode_ussd_request
 
 import usb.backend.libusb1
 import usb.core
@@ -25,6 +26,14 @@ SUDO_MISSING_RULE_EXIT_CODE = 1  # `sudo -n` exits with 1 when it would have ask
 
 SEND_TIMEOUT_SECONDS = 30
 LIST_MESSAGES_TIMEOUT_SECONDS = 15
+USSD_REPLY_TIMEOUT_SECONDS = 25  # USSD sessions time out after ~20-30 s
+
+# `+CUSD: <status>,"<hex>",<dcs>` — the line is complete only once it ends with a line break.
+USSD_REPLY_LINE_PATTERN = re.compile(
+    r'\+CUSD:\s*(?P<status>\d+)(?:,"(?P<reply_hex>[0-9A-Fa-f]*)"(?:,(?P<data_coding_scheme>\d+))?)?[ \t]*\r?\n'
+)
+USSD_STATUS_AWAITING_REPLY = 1
+USSD_STATUS_NOT_SUPPORTED = 4
 
 STATE_DETECTED = "Détecté"
 STATE_SWITCHING = "Changement de mode"
@@ -57,6 +66,7 @@ class DongleStatus:
     state: str
     imei: Optional[str] = None
     operator_name: Optional[str] = None
+    operator_network_code: Optional[str] = None  # MCC+MNC, e.g. "60803"
     signal_dbm: Optional[int] = None
     signal_bars: int = 0
     sim_status: Optional[str] = None
@@ -234,6 +244,34 @@ class DongleConnection:
         """Free one SIM slot. Returns True when the dongle confirmed."""
         return "OK" in self.send_at_command(f"AT+CMGD={sim_index}", wait_seconds=5.0)
 
+    def run_ussd_code(self, ussd_code, wait_seconds=USSD_REPLY_TIMEOUT_SECONDS):
+        """Dial a USSD code and return the operator's decoded reply text. The reply arrives asynchronously, seconds after
+        the immediate 'OK'. Raises RuntimeError (French message) if the dongle or network gives no usable reply.
+        Only for codes that read information: this never answers a menu."""
+        self.send_at_command("AT+CUSD=2")  # close any session left open, so ours starts clean
+        request_reply = self._write_and_read(
+            f'AT+CUSD=1,"{encode_ussd_request(ussd_code)}",15\r',
+            wait_seconds,
+            lambda reply: USSD_REPLY_LINE_PATTERN.search(reply) is not None or "ERROR" in reply,
+        )
+        reply_match = USSD_REPLY_LINE_PATTERN.search(request_reply + "\n")  # the reply text comes back stripped
+        if reply_match is None:
+            if "ERROR" in request_reply:
+                raise RuntimeError(f"Le dongle a refusé le code USSD : {request_reply}")
+            raise RuntimeError("Pas de réponse de l'opérateur au code USSD")
+        ussd_status = int(reply_match.group("status"))
+        if ussd_status == USSD_STATUS_NOT_SUPPORTED:
+            raise RuntimeError("Code USSD non pris en charge par le réseau")
+        if ussd_status == USSD_STATUS_AWAITING_REPLY:
+            self.send_at_command("AT+CUSD=2")  # a menu is waiting for a choice: never answer it, just close the session
+        reply_hex = reply_match.group("reply_hex")
+        if not reply_hex:
+            raise RuntimeError("Réponse USSD vide")
+        try:
+            return decode_ussd_reply(reply_hex, int(reply_match.group("data_coding_scheme") or 15))
+        except ValueError:
+            raise RuntimeError("Réponse USSD illisible")
+
     def read_identity(self):
         imei_match = re.search(r"\d{15}", self.send_at_command("AT+CGSN"))
         return imei_match.group(0) if imei_match else None
@@ -258,3 +296,12 @@ class DongleConnection:
 
         operator_match = re.search(r'\+COPS:\s*\d+,\d+,"([^"]*)"', self.send_at_command("AT+COPS?"))
         status.operator_name = operator_match.group(1) if operator_match else None
+        if status.operator_network_code is None and operator_match:
+            self._read_operator_network_code(status)
+
+    def _read_operator_network_code(self, status):
+        """The numeric operator id is far more reliable than the name. Switching the display format does not touch the registration."""
+        self.send_at_command("AT+COPS=3,2")
+        code_match = re.search(r'\+COPS:\s*\d+,2,"(\d{5,6})"', self.send_at_command("AT+COPS?"))
+        self.send_at_command("AT+COPS=3,0")
+        status.operator_network_code = code_match.group(1) if code_match else None

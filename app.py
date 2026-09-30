@@ -23,6 +23,7 @@ from inbox_page import InboxPage
 from inbox_store import InboxStore
 from notification_sound import play_new_message_sound
 from dongle_monitor import DongleMonitor
+from sim_page import SimPage
 from sidebar import SIDEBAR_SECTION_NAMES, Sidebar
 
 
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         self.contacts_page = ContactsPage(self.contact_store)
         self.history_page = HistoryPage(self.outbox_store)
         self.inbox_page = InboxPage(self.inbox_store)
+        self.sim_page = SimPage()
         dedicated_pages = {
             "Appareils": self.devices_page,
             "Composer": self.compose_page,
@@ -63,6 +65,7 @@ class MainWindow(QMainWindow):
             "Contacts": self.contacts_page,
             "Boîte d'envoi": self.outbox_page,
             "Historique": self.history_page,
+            "SIM": self.sim_page,
         }
         self.content_stack = QStackedWidget()
         for section_name in SIDEBAR_SECTION_NAMES:
@@ -70,6 +73,8 @@ class MainWindow(QMainWindow):
 
         self.dongle_monitor.statuses_updated.connect(self.devices_page.show_statuses)
         self.devices_page.refresh_requested.connect(self.dongle_monitor.request_immediate_rescan)
+        self.sim_page.balance_check_requested.connect(self.dongle_monitor.request_balance_check)
+        self.dongle_monitor.balance_check_finished.connect(self.sim_page.show_balance_results)
         self.compose_page.messages_queued.connect(self.show_outbox)
         self.dongle_monitor.inbox_messages_received.connect(self.handle_new_inbox_messages)
         self.inbox_page.unread_count_changed.connect(self.sidebar_list.show_unread_inbox_count)

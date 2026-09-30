@@ -5,12 +5,15 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import usb.core
 from PySide6.QtCore import QThread, Signal
 
 import dongle
 from dongle import DongleConnection, DongleStatus
+from mobile_operators import identify_operator, load_operators, parse_balance_with_patterns
+from sim_balance import SimBalanceResult, is_transient_failure_reply
 
 SCAN_INTERVAL_MS = 3000
 HEALTH_CHECK_INTERVAL_SECONDS = 30
@@ -19,6 +22,8 @@ SWITCH_WAIT_SECONDS = 20
 RETRY_AFTER_ERROR_SECONDS = 10
 MODE_SWITCHER_GRACE_SECONDS = 25  # the helper switches within ~3 s, then the dongle needs ~10 s to come back
 RETRY_SWITCH_AFTER_SECONDS = 20
+BALANCE_CHECK_ATTEMPTS = 3          # the operator sometimes answers "Operation ratee!" once
+BALANCE_CHECK_RETRY_PAUSE_SECONDS = 4
 
 
 OUTCOME_SENT = "sent"
@@ -64,6 +69,7 @@ class SendRequest:
 class DongleMonitor(QThread):
     statuses_updated = Signal(list)
     inbox_messages_received = Signal(int)  # how many new messages were stored in the database
+    balance_check_finished = Signal(list)  # one SimBalanceResult per ready dongle (empty when none is ready)
 
     def __init__(self, inbox_store=None):
         super().__init__()
@@ -80,6 +86,12 @@ class DongleMonitor(QThread):
         self.wake_up_requested = threading.Event()
         self.pending_messages = queue.Queue()
         self.force_full_refresh = False
+        self.balance_check_requested = threading.Event()
+
+    def request_balance_check(self):
+        """Called from the UI thread: ask every ready SIM for its balance; the answer comes back as `balance_check_finished`."""
+        self.balance_check_requested.set()
+        self.wake_up_requested.set()
 
     def request_immediate_rescan(self):
         """Called from the UI thread: rescan now, ignoring health-check and retry timers."""
@@ -106,6 +118,7 @@ class DongleMonitor(QThread):
             return
         while not self.isInterruptionRequested():
             self._send_pending_messages()
+            self._check_balances_if_requested()
             try:
                 self._scan_once(usb_backend)
                 self._drain_sim_inboxes()
@@ -141,6 +154,49 @@ class DongleMonitor(QThread):
                 # failures after the text is written are turned into SendOutcomeUnknown by the device layer,
                 # so an error escaping from it happened before the text left: definitely not sent
                 send_request.finish(OUTCOME_FAILED, str(send_error))
+
+    def _check_balances_if_requested(self):
+        if not self.balance_check_requested.is_set():
+            return
+        self.balance_check_requested.clear()
+        balance_results = []
+        for usb_location, connection in list(self.open_connections.items()):
+            status = self.current_statuses.get(usb_location)
+            if status is None or status.state != dongle.STATE_READY:
+                continue
+            balance_results.append(self._read_balance(connection, status))
+        self.balance_check_finished.emit(balance_results)
+
+    def _read_balance(self, connection, status):
+        balance_result = SimBalanceResult(status.usb_location, status.imei, status.operator_name, datetime.now())
+        operator = identify_operator(status.operator_network_code, status.operator_name, load_operators())
+        if operator is None or not operator.balance_ussd_code:
+            reported_operator = status.operator_name or status.operator_network_code
+            operator_label = f"« {reported_operator} »" if reported_operator else "inconnu"
+            balance_result.error_message = (
+                f"Opérateur {operator_label} non reconnu : ajoutez son code USSD dans operators.json"
+            )
+            return balance_result
+        balance_result.operator_display_name = operator.display_name
+        balance_result.used_ussd_code = operator.balance_ussd_code
+        balance_result.is_ussd_code_verified = operator.balance_code_verified
+        for attempt_number in range(1, BALANCE_CHECK_ATTEMPTS + 1):
+            try:
+                balance_result.operator_reply_text = connection.run_ussd_code(operator.balance_ussd_code)
+            except (usb.core.USBError, RuntimeError) as ussd_error:
+                balance_result.error_message = str(ussd_error)
+            else:
+                balance_result.balance_fcfa = parse_balance_with_patterns(
+                    balance_result.operator_reply_text, operator.balance_reply_patterns
+                )
+                balance_result.error_message = (
+                    None if balance_result.balance_fcfa is not None else "Réponse de l'opérateur non comprise"
+                )
+                if balance_result.balance_fcfa is not None or not is_transient_failure_reply(balance_result.operator_reply_text):
+                    return balance_result
+            if attempt_number < BALANCE_CHECK_ATTEMPTS and not self.isInterruptionRequested():
+                time.sleep(BALANCE_CHECK_RETRY_PAUSE_SECONDS)
+        return balance_result
 
     def _refuse_pending_messages(self):
         """The monitor is closing: nothing more will be sent, and waiting callers must not hang."""

@@ -38,6 +38,12 @@ SIDEBAR_SECTIONS = [
         "#8B5CF6",
         '<rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>',
     ),
+    (
+        "SIM",
+        "#EF4444",
+        '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/>'
+        '<rect x="8" y="12" width="8" height="6" rx="1"/>',
+    ),
 ]
 
 SIDEBAR_SECTION_NAMES = [section_name for section_name, _, _ in SIDEBAR_SECTIONS]

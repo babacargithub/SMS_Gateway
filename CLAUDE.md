@@ -67,7 +67,7 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
   `…Vous avez 200 Fcfa de credit` → parse the amount with a pattern, never display raw text as the balance.
   The same code sometimes returns `Operation ratee!` (transient failure, status 0) → retry later.
 - `#111#` opens the Expresso offers portal; options 1–5 are **purchases**. Never automate choices there.
-- Operator USSD codes must be configurable per SIM/operator, not hard-coded.
+- Operator USSD codes must be configurable per SIM/operator, not hard-coded (`mobile_operators.py` + `operators.json`). The gateway must work with Orange, Expresso and Free SIMs, not only this Expresso one.
 
 ## AT command behaviour observed on this dongle
 
@@ -148,6 +148,16 @@ Desktop app (current):
 - `DongleMonitor._drain_sim_inboxes` — every scan cycle: read SIM → store in DB → only then `AT+CMGD` each slot; emits `inbox_messages_received` → `notification_sound.py` (afplay Glass.aiff). **Not yet verified with the real dongle.** Long SMS still arrive as separate parts (text mode; PDU reassembly still to do).
 - `history_page.py` — Historique = the **sent** messages (`SENT`, same `messages` table, newest first, « Envoyé le » = `updated_at`), search,
   multi-select delete. The Outbox shows only `OUTBOX_STATES` (WAITING, SENDING, FAILED, UNKNOWN): a message leaves it live the moment it is `SENT`.
+
+- `sim_page.py` — **SIM** screen (last sidebar item): « Vérifier le solde » → one card per ready dongle with the balance (`1 250 FCFA`), or a French error.
+  Flow: `DongleMonitor.request_balance_check` → `_read_balance` (USSD via `DongleConnection.run_ussd_code`, up to 3 tries on « Operation ratee! ») → signal `balance_check_finished`.
+  Manual button only, never automatic. **Not yet verified with the real dongle.**
+- `mobile_operators.py` — pure, **multi-operator** (Expresso, Orange, Free): `MobileOperator` profiles (network codes, name aliases, balance USSD code,
+  reply regexes). The SIM is recognised by its numeric MCC+MNC (`dongle.py` reads it with `AT+COPS=3,2` → `DongleStatus.operator_network_code`;
+  Orange 60801, Free 60802, Expresso 60803), then by name alias. Owner overrides live in
+  `~/Library/Application Support/SMS Gateway/operators.json`, e.g. `{"orange": {"balance_ussd_code": "#123#", "balance_reply_patterns": ["..."]}}`.
+  **Only Expresso `*222#` is verified.** Orange `#123#` and Free `*222#` are unverified guesses (flagged on the card); the card shows the raw reply when it can't be parsed.
+  `sim_balance.py` = result type + transient-failure rule; `ussd_codec.py` = GSM 7-bit pack/unpack.
 
 Scripts (still useful, run outside the app):
 - `huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).
