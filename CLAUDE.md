@@ -1,23 +1,28 @@
 # SMS Gateway — project brief
 
-Internal SMS tool inspired by SMS Caster (sidebar: Compose, Contacts, Outbox, Devices, Inbox),
-sending through Huawei USB dongles plugged into one Mac. Internal use only, not distributed.
-Other internal apps (Bayal Services, Global Transports — both Laravel) will call its HTTP API.
+Internal **desktop app** for macOS, inspired by SMS Caster, that sends (and later receives) SMS
+through Huawei USB dongles plugged into one Mac. Internal use only, not distributed.
+You open the app, import contacts from Excel/CSV, compose, and send. There is **no server, no HTTP API
+and no daemon** in the current design. External integrations (Laravel apps such as Bayal Services and
+Global Transports, contact-fetching APIs) may come much later; keep the core UI-independent so they can be added.
 
 ## Decisions (already made)
 
 - **Platform:** macOS only, one Mac (Apple Silicon M2). No Windows, no installers, no licensing concerns.
-- **Device service:** Python (already proven on this Mac). Harden it rather than rewrite it.
-- **UI:** Vue.js app served by the Python service at http://localhost:8000.
-- **Storage:** SQLite, single file, backed up regularly.
-- **Integration:** local HTTP API with an `X-API-Key` header, used by the UI and the Laravel apps.
-- **Runs as:** launchd LaunchDaemon (root), started at boot, restarted on crash.
+- **Language / UI:** Python + **PySide6 (Qt)**, a single process. Reuses the proven raw-USB code directly.
+  Rejected: Vue served over HTTP, Swift rewrite, Electron/Tauri with a sidecar.
+- **Architecture:** UI → services → dongle manager (one thread owning all USB) → device layer (pyusb/AT).
+  The UI never touches USB; it talks to the monitor thread through Qt signals and a thread-safe queue.
+- **Storage:** SQLite, single file, backed up regularly (not built yet).
+- **Runs as:** the logged-in user, launched by hand. No launchd, no root for the app itself.
+- **Contacts:** imported from Excel/CSV only (no external API for now).
+- **Language of the UI:** sidebar mixes English with "Historique" (French); keep labels as the owner names them.
 
 ## Hardware facts (verified by hand)
 
 - Dongle: Huawei, USB vendor `0x12d1`.
-  - Plugged in, it appears as a virtual CD-ROM: product `0x14fe`, volume `/Volumes/Internet Everywhere`.
-    The bundled Huawei installer is Intel-only and useless on this Mac — never rely on it.
+  - Plugged in, it appears as a virtual CD-ROM: product `0x14fe`, volume `/Volumes/Internet Everywhere`
+    (disk shows up as e.g. `disk8`). The bundled Huawei installer is Intel-only and useless — never rely on it.
   - Mode switch: eject the volume, then write this message to the bulk OUT endpoint of interface 0:
     `55534243123456780000000000000011062000000100000000000000000000`
     → re-enumerates about 10 s later as product `0x151d` (modem mode).
@@ -26,9 +31,15 @@ Other internal apps (Bayal Services, Global Transports — both Laravel) will ca
   pyusb + libusb (`/opt/homebrew/lib/libusb-1.0.dylib`).
 - The AT port is **interface 0** (class `0xFF`, bulk IN/OUT). Found by probing vendor-class interfaces
   and keeping the one that answers `AT` with `OK`.
-- Scripts currently run with `sudo`. Not yet tested whether root is actually required — worth checking.
+- **Root (tested):** the CD-ROM → modem **switch needs root** (`USBError: Access denied`, even after
+  `diskutil eject`). **Modem mode works fine as a normal user** (IMEI, signal, SIM, network all read without sudo).
+  So only the switch needs privilege — planned fix: a small privileged helper for that one step, so the app
+  never runs as root. Until then, run `sudo ~/usbenv/bin/python huawei_switch.py` after each replug.
+- `diskutil eject` can hang (it timed out at 15 s once) — always catch `subprocess.SubprocessError`.
 - The dongle may emit unsolicited lines (`^RSSI`, `^HCSQ`, `^BOOT`…); flush before each command.
   `AT^CURC=0` disables them.
+- Identity read from the dongle: IMEI via `AT+CGSN`, operator via `AT+COPS?` (returns `expresso`),
+  SIM via `AT+CPIN?`, registration via `AT+CREG?` (1 home, 5 roaming).
 
 ## SIM facts
 
@@ -43,9 +54,12 @@ Other internal apps (Bayal Services, Global Transports — both Laravel) will ca
 
 - Echo is on by default → send `ATE0` once at connect.
 - `AT+CMGF=1` (text mode) works. Send: `AT+CMGS="+221XXXXXXXXX"` → `>` prompt → text + `\x1a`
-  → `+CMGS: <ref>` then `OK`. Confirmed working end to end.
+  → `+CMGS: <ref>` then `OK`. Confirmed working end to end with the scripts. The same flow is now in the
+  app (`DongleConnection.send_text_message`) but **not yet verified from the Compose screen**.
 - `+CMS ERROR: 302` was caused by a malformed number. Numbers must be `+221` + 9 digits, no spaces.
-- Signal: `AT+CSQ` returned 11–14 (≈ −91 to −85 dBm). dBm = −113 + 2 × value; 99 = unknown.
+- Error replies: `+CMS ERROR: n` ends in digits, so detect final replies with `"ERROR" in reply`, not `endswith("ERROR")`.
+- Signal: `AT+CSQ` returned 11–14 (≈ −91 to −85 dBm) earlier and 4 bars (−67 dBm) later.
+  dBm = −113 + 2 × value; 99 = unknown.
 - Reading SMS: `AT+CPMS="SM","SM","SM"` then `AT+CMGL="ALL"`.
   - Bodies with accents come back as **UCS2 hex** (decode as UTF-16BE).
   - Long SMS arrive as **separate entries** in text mode (same sender + timestamp, text cut mid-word).
@@ -61,50 +75,81 @@ Other internal apps (Bayal Services, Global Transports — both Laravel) will ca
   - Sessions time out after ~20–30 s. **Unresolved:** a menu reply sent as `"36"` (packed `6`) was
     rejected with "Entrée non valide" — could be the format or a session timeout. Needs testing.
 
-## Existing code in this folder
+## Code map
 
-- `huawei_switch.py` — one-shot CD-ROM → modem mode switch.
-- `huawei_at.py` — interactive AT shell over raw USB, plus `send <number> <text>`. Works.
-- `gateway.py` — FastAPI service: SQLite queue, background worker (auto mode switch, reconnect,
-  retries, delay between sends), endpoints `POST /sms`, `POST /sms/bulk`, `GET /sms`, `GET /sms/{id}`,
-  `GET /status`. Text mode only; strips accents; max 160 chars.
-  **Not yet tested on the Mac** — first task is to run it and fix what breaks.
-- `sn.globalsoft.smsgateway.plist` — launchd daemon definition (API key placeholder to replace).
+Desktop app (current):
+- `app.py` — entry point and `MainWindow` (sidebar + stacked pages). Owns the `DongleMonitor` thread.
+- `sidebar.py` — `Sidebar`: colored SVG icons, separators (custom delegate, none after the last item),
+  order: Compose, Inbox, Contacts, Outbox, Historique, Devices. Pages are matched **by name**, not position.
+- `compose_page.py` — number + message fields, live validation, 160-char counter, Send, result states.
+- `devices_page.py` — table of dongles (state, IMEI, operator, signal bars + dBm, SIM, network, USB) and Refresh.
+- `dongle.py` — **device layer, no UI**: USB scan/switch, `DongleConnection` (AT port, timeouts, flush),
+  `send_text_message`, live status reading, `SendRejected` / `SendOutcomeUnknown`.
+- `dongle_monitor.py` — `DongleMonitor(QThread)`: scans USB every 3 s, auto-switches CD-ROM dongles,
+  health check every 30 s (3 misses → reconnect), send queue, Refresh (`request_immediate_rescan`).
+  The scan loop catches and logs every exception so the thread can never die silently.
+- `sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
+- Pages other than Compose and Devices are empty placeholders for now.
+
+Scripts (still useful, run outside the app):
+- `huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).
+- `huawei_at.py` — interactive AT shell, plus `send <number> <text>`.
+
+Legacy (superseded by the desktop design, kept only as reference — mine it for queue/retry ideas, then delete):
+- `gateway.py` — old FastAPI service with SQLite queue and worker. Never run on this Mac.
+- `sn.globalsoft.smsgateway.plist` — old launchd daemon definition. Not used.
 
 ## Environment
 
-- Python venv: `~/usbenv` (pyusb, fastapi, uvicorn). Conda `(base)` is active in the shell —
-  always call `~/usbenv/bin/python` explicitly.
+- Python venv: `~/usbenv` (pyusb, PySide6; fastapi/uvicorn are only for the legacy gateway). Conda `(base)`
+  is active in the shell — always call `~/usbenv/bin/python` explicitly.
+- Run the app: `~/usbenv/bin/python app.py`. Restart it after code changes (it does not hot-reload).
 - Homebrew libusb at `/opt/homebrew/lib`.
+- Preview UI without a display: `QT_QPA_PLATFORM=offscreen`, `widget.grab().save(png)`, then view the PNG.
 - zsh aborts a whole command when one glob matches nothing (`ls /dev/cu.* /dev/tty.usb*`).
-- Only one process can own the dongle: stop the gateway before using `huawei_at.py`.
+- Only one process can own the dongle: close the app before using `huawei_at.py`.
 
 ## Reliability requirements (dongle plugged in for days)
 
 - Per-dongle state machine: Absent → Detected (CD-ROM) → Switching → Initializing → Ready → Busy
-  → Error → Disconnected. Log every transition.
-- Rescan USB every few seconds (don't rely only on hotplug events).
-- Health check every 30–60 s (`AT`, `AT+CSQ`, `AT+CREG?`); 2–3 missed replies → reset and reconnect,
-  even if the USB device still appears present.
-- Timeouts on every read/write. No blocking forever.
-- A message stuck in `sending` after a disconnect is requeued only if no `+CMGS` was received (no duplicates).
-- Identify dongles by IMEI (`AT+CGSN`), not by USB location.
-- Structured logs with rotation.
-- Mac must not sleep (`sudo pmset -c sleep 0`) and should restart after power loss (`sudo pmset autorestart 1`).
+  → Error → Disconnected. Implemented: Detected, Switching, Initializing, Ready, Error. **Not yet:**
+  Busy, Disconnected, and logging every transition.
+- Rescan USB every few seconds (don't rely only on hotplug events). Done.
+- Health check every 30 s (`AT+CSQ`, `AT+CPIN?`, `AT+CREG?`, `AT+COPS?`); 3 missed replies → reset and
+  reconnect, even if the USB device still appears present. Done.
+- Timeouts on every read/write. No blocking forever. Done for USB; a send waits up to 30 s.
+- **Never duplicate a send.** A message is `sent` only on `+CMGS`; `not sent` only on a definite error;
+  anything else (timeout, USB error after the text was written) is **unknown** and must never be retried
+  automatically — the user checks the recipient. The Outbox must store this third state.
+- Identify dongles by IMEI (`AT+CGSN`), not by USB location. The IMEI is read but the monitor still keys
+  connections by USB location — switch to IMEI when multi-dongle support arrives.
+- Structured logs with rotation. Not yet (only `logging.exception` in the scan loop).
+- Mac must not sleep during a campaign: hold a power assertion (`caffeinate` / IOKit) while sending;
+  `sudo pmset autorestart 1` is no longer needed because the app is not a daemon.
 - Use direct USB ports or a powered hub (dongles draw up to 500 mA).
+- Quitting mid-campaign must warn, then pause and persist the queue.
 
 ## Roadmap
 
-1. Run and harden `gateway.py`: state machine, health checks, IMEI identity, logs, test without sudo.
-2. Devices screen (Vue): state, operator, signal bars + dBm, SIM status, credit (USSD balance), test SMS.
-3. Outbox + Compose: single and bulk send, CSV import, templates with `{variables}`, char/part counter.
-4. Contacts: groups, custom fields, CSV/Excel import, `+221` normalization, blacklist.
-5. Inbox: CNMI notifications, UCS2 decode, PDU-mode multipart reassembly, auto-blacklist on "STOP".
-6. Extras: UCS2 + multipart sending, delivery reports (`AT+CSMP`, `AT+CNMI`), scheduling, campaigns
-   with pause/resume, multi-dongle load balancing, low-credit alerts, per-SIM hourly/daily caps.
+1. ✅ App shell: sidebar with icons, Devices screen (state, IMEI, operator, signal, SIM, network, Refresh).
+2. ✅ Compose: one number + one message, single SMS. Next: verify a real send from the app.
+3. Privileged helper for the mode switch (so replug recovers without a manual `sudo`).
+4. **Outbox + Historique**: persist every message in SQLite with status sent / failed / unknown; retry failed only.
+   (Outbox = queue of pending messages; Historique = archive of what was sent/received — confirm with the owner.)
+5. Contacts + import: Excel (`openpyxl`) and CSV (handle `;` separator and UTF-8 BOM), column mapping,
+   `+221` normalization, duplicates and invalid-number report, groups, custom fields, blacklist.
+6. Campaigns: bulk send from imported contacts, templates with `{variables}`, char/part counter, steady rate,
+   pause/resume/stop, sleep prevention.
+7. Devices extras: credit via USSD `*222#` (needs GSM 7-bit packed hex unpacker), test-SMS button.
+8. Inbox: CNMI notifications, UCS2 decode, PDU-mode multipart reassembly, auto-blacklist on "STOP".
+9. Extras: UCS2 + multipart sending, delivery reports (`AT+CSMP`, `AT+CNMI`), scheduling, multi-dongle
+   load balancing, low-credit alerts, per-SIM hourly/daily caps, optional HTTP API for the Laravel apps.
 
 ## Working rules
 
 - Only send test SMS to the owner's own number (set via env `TEST_NUMBER`), never to real contacts.
+  Claude must never send a real SMS on its own; ask the owner to test sends.
 - Never automate choices in operator USSD menus that could purchase bundles.
 - Keep a steady send rate; prepaid SIMs sending too fast risk being blocked by the operator.
+- Use descriptive names for variables and functions, even when longer (owner's global rule).
+- Keep USB/AT code out of UI files; UI talks to the monitor via signals only.
