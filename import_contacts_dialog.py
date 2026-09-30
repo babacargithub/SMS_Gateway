@@ -152,7 +152,7 @@ class ImportContactsDialog(QDialog):
             f"<b>{len(self.data_rows)}</b> lignes : <b>{len(plan.valid_contacts)}</b> valides, "
             f"{len(plan.invalid_rows)} numéro(s) invalide(s), {plan.empty_phone_count} sans numéro, "
             f"{plan.duplicate_count_in_file} doublon(s) dans le fichier. "
-            "Les autres colonnes sont conservées et utilisables comme {variables} dans les messages."
+            "Les autres colonnes sont conservées dans « Détails »."
         )
         shown_invalid_rows = plan.invalid_rows[:INVALID_ROWS_SHOWN]
         problem_lines = [f"Ligne {row_number} : « {raw_text} » n'est pas un numéro valide" for row_number, raw_text in shown_invalid_rows]

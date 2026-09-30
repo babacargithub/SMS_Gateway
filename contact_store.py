@@ -195,6 +195,21 @@ class ContactStore:
             ).fetchall()
         return [StoredContact(row[0], row[1], row[2], json.loads(row[3])) for row in rows]
 
+    def list_contacts_for_lists(self, list_ids):
+        """Contacts of several lists, as [(list_name, StoredContact)], ordered by list name then import order."""
+        if not list_ids:
+            return []
+        placeholders = ",".join("?" * len(list_ids))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT contact_lists.name, contacts.id, contacts.name, contacts.phone_number, contacts.custom_fields "
+                "FROM contacts JOIN contact_lists ON contact_lists.id = contacts.list_id "
+                f"WHERE contacts.list_id IN ({placeholders}) "
+                "ORDER BY contact_lists.name COLLATE NOCASE, contacts.id",
+                list(list_ids),
+            ).fetchall()
+        return [(row[0], StoredContact(row[1], row[2], row[3], json.loads(row[4]))) for row in rows]
+
     def delete_contacts(self, contact_ids):
         with self._connect() as connection:
             for chunk_start in range(0, len(contact_ids), DELETE_CHUNK_SIZE):

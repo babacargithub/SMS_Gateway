@@ -21,13 +21,15 @@ from PySide6.QtWidgets import (
 )
 
 from contact_import import read_spreadsheet
-from french_labels import format_contact_count, format_french_date
+from dialogs import ask_yes_no_defaulting_to_no
+from french_labels import format_contact_count, format_custom_fields, format_french_date
 from contact_store import ListNameAlreadyExists
+from table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS, build_position_item
 from icons import EDIT_ICON_SHAPES, TRASH_ICON_SHAPES, build_colored_icon
 from import_contacts_dialog import ImportContactsDialog
 
-LIST_COLUMN_TITLES = ["Liste", "Contacts", "Créée le", "Actions"]
-ACTIONS_COLUMN = 3
+LIST_COLUMN_TITLES = [POSITION_COLUMN_TITLE, "Liste", "Contacts", "Créée le", "Actions"]
+ACTIONS_COLUMN = 4
 EDIT_ICON_COLOR = "#3B82F6"
 DELETE_ICON_COLOR = "#EF4444"
 ICON_BUTTON_SIZE_PIXELS = 32
@@ -35,13 +37,9 @@ ICON_BUTTON_STYLE = (
     "QToolButton { border: none; border-radius: 6px; }"
     "QToolButton:hover { background: rgba(128, 128, 128, 0.22); }"
 )
-CONTACT_COLUMN_TITLES = ["Nom", "Téléphone", "Détails"]
+CONTACT_COLUMN_TITLES = [POSITION_COLUMN_TITLE, "Nom", "Téléphone", "Détails"]
 FILE_DIALOG_FILTER = "Fichiers de contacts (*.xlsx *.xlsm *.csv);;Tous les fichiers (*)"
 EMPTY_STATE_STYLE = "font-size: 16px; color: gray;"
-
-
-def format_custom_fields(custom_fields):
-    return "  ·  ".join(f"{field_name} : {field_value}" for field_name, field_value in custom_fields.items())
 
 
 def build_icon_button(icon_shapes, icon_color, tooltip_text, on_click):
@@ -53,11 +51,6 @@ def build_icon_button(icon_shapes, icon_color, tooltip_text, on_click):
     icon_button.setCursor(Qt.PointingHandCursor)
     icon_button.clicked.connect(on_click)
     return icon_button
-
-
-def ask_yes_no_defaulting_to_no(parent, title, question):
-    """Destructive actions: the safe answer (No) is the default button."""
-    return QMessageBox.question(parent, title, question, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
 
 
 class ContactsPage(QWidget):
@@ -98,10 +91,12 @@ class ContactsPage(QWidget):
         self.lists_table.verticalHeader().setDefaultSectionSize(44)
         self.lists_table.viewport().setCursor(Qt.PointingHandCursor)
         header = self.lists_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(ACTIONS_COLUMN, QHeaderView.ResizeToContents)
+        self.lists_table.setColumnWidth(0, POSITION_COLUMN_WIDTH_PIXELS)
         self.lists_table.cellClicked.connect(self.open_list_from_row)
 
         self.no_lists_label = QLabel("Aucune liste de contacts pour le moment.\nImportez un fichier Excel ou CSV pour créer votre première liste.")
@@ -124,9 +119,10 @@ class ContactsPage(QWidget):
             name_font = name_item.font()
             name_font.setBold(True)
             name_item.setFont(name_font)
-            self.lists_table.setItem(row_index, 0, name_item)
-            self.lists_table.setItem(row_index, 1, QTableWidgetItem(format_contact_count(contact_list.contact_count)))
-            self.lists_table.setItem(row_index, 2, QTableWidgetItem(format_french_date(contact_list.created_date)))
+            self.lists_table.setItem(row_index, 0, build_position_item(row_index + 1))
+            self.lists_table.setItem(row_index, 1, name_item)
+            self.lists_table.setItem(row_index, 2, QTableWidgetItem(format_contact_count(contact_list.contact_count)))
+            self.lists_table.setItem(row_index, 3, QTableWidgetItem(format_french_date(contact_list.created_date)))
             actions_widget = QWidget()
             actions_layout = QHBoxLayout(actions_widget)
             actions_layout.setContentsMargins(6, 0, 6, 0)
@@ -200,10 +196,12 @@ class ContactsPage(QWidget):
         self.contacts_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.contacts_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.contacts_table.verticalHeader().setVisible(False)
-        self.contacts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
-        self.contacts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.contacts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.contacts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.contacts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.contacts_table.horizontalHeader().setStretchLastSection(True)
-        self.contacts_table.setColumnWidth(0, 220)
+        self.contacts_table.setColumnWidth(0, POSITION_COLUMN_WIDTH_PIXELS)
+        self.contacts_table.setColumnWidth(1, 220)
 
         self.no_contacts_label = QLabel("Cette liste ne contient aucun contact.")
         self.no_contacts_label.setAlignment(Qt.AlignCenter)
@@ -230,9 +228,10 @@ class ContactsPage(QWidget):
         self.contacts_table.setUpdatesEnabled(False)
         self.contacts_table.setRowCount(len(stored_contacts))
         for row_index, contact in enumerate(stored_contacts):
-            self.contacts_table.setItem(row_index, 0, QTableWidgetItem(contact.name))
-            self.contacts_table.setItem(row_index, 1, QTableWidgetItem(contact.phone_number))
-            self.contacts_table.setItem(row_index, 2, QTableWidgetItem(format_custom_fields(contact.custom_fields)))
+            self.contacts_table.setItem(row_index, 0, build_position_item(row_index + 1))  # stays fixed when searching
+            self.contacts_table.setItem(row_index, 1, QTableWidgetItem(contact.name))
+            self.contacts_table.setItem(row_index, 2, QTableWidgetItem(contact.phone_number))
+            self.contacts_table.setItem(row_index, 3, QTableWidgetItem(format_custom_fields(contact.custom_fields)))
         self.contacts_table.setUpdatesEnabled(True)
         self.no_contacts_label.setVisible(not stored_contacts)
         self.contacts_table.setVisible(bool(stored_contacts))
@@ -243,7 +242,7 @@ class ContactsPage(QWidget):
         visible_count = 0
         for row_index in range(self.contacts_table.rowCount()):
             row_text = (
-                self.contacts_table.item(row_index, 0).text() + " " + self.contacts_table.item(row_index, 1).text()
+                self.contacts_table.item(row_index, 1).text() + " " + self.contacts_table.item(row_index, 2).text()
             ).lower()
             is_match = search_text in row_text
             self.contacts_table.setRowHidden(row_index, not is_match)

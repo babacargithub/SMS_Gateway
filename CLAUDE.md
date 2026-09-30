@@ -100,15 +100,34 @@ Desktop app (current):
 - `contacts_page.py` — opens on the lists (name, count, date, rename ✎ / delete 🗑 icon buttons); clicking a list
   shows its contacts (search, delete selection). `import_contacts_dialog.py` — column mapping, validation report,
   destination list (new name or existing list).
-- `compose_page.py` — number + message fields, live validation, 160-char counter, Send, result states.
+- `compose_page.py` — **campaign composer**: tick one or more contact lists, write a message with variables, live
+  preview/validation, **Lancer** queues one personalised message per contact (state `WAITING`) and jumps to the Outbox.
+  It does **not** send anything itself. The old single-number direct send was removed from this screen.
+- `message_template.py` — pure: `{variables}`; supported for now: `{nom}`, `{téléphone}`, `{détails}` (case and accents
+  ignored). `{détails}` = all extra imported columns as `Ville : Dakar, Montant : 5000` (ASCII `, ` separator, because
+  text mode turns `·` into `?`). Unknown variables block Lancer. Extra columns 3–10 as variables are planned.
+- `campaign_builder.py` — pure: template + recipients → `CampaignDraft` (a number in several lists is kept once,
+  counts of empty values, messages over 160 characters or empty). Blocks Lancer on unknown variables / too long / empty.
+- `outbox_store.py` — SQLite `campaigns` + `messages` (recipient, number and final text are **copied**, so deleting a
+  contact or list never changes the queue). States: `WAITING`, `SENDING`, `SENT`, `FAILED`, `UNKNOWN`.
+- `outbox_page.py` — Boîte d'envoi: **Envoyer / Pause (Reprendre) / Arrêter** on top, progress bar, "simulation" banner,
+  per-state counters, table (N°, state icon only with tooltip, recipient, number, message, list, date), state filter,
+  "Vider les messages en attente" (confirm, default Non). Rows update in place while sending; reloads when shown.
+- `message_sender.py` — the seam for delivery: `send(number, text) -> SendResult`. **`SimulatedMessageSender` is the only
+  implementation today** (random success/failure, nothing is sent; `is_simulation = True` shows the banner). Real
+  sending = a dongle-backed sender with the same interface; the worker and screens stay unchanged.
+- `sending_worker.py` — `SendingWorker(QThread)`: claims the oldest `WAITING` message (→ `SENDING`), sends, records
+  SENT/FAILED/UNKNOWN. Pause/stop never cut a message in half (the in-flight one finishes first); stop leaves the rest
+  `WAITING`. Messages cut off by a crash (`SENDING` at startup) become `UNKNOWN` and are never resent automatically.
 - `devices_page.py` — table of dongles (state, IMEI, operator, signal bars + dBm, SIM, network, USB) and Refresh.
 - `dongle.py` — **device layer, no UI**: USB scan/switch, `DongleConnection` (AT port, timeouts, flush),
   `send_text_message`, live status reading, `SendRejected` / `SendOutcomeUnknown`.
 - `dongle_monitor.py` — `DongleMonitor(QThread)`: scans USB every 3 s, auto-switches CD-ROM dongles,
-  health check every 30 s (3 misses → reconnect), send queue, Refresh (`request_immediate_rescan`).
+  health check every 30 s (3 misses → reconnect), Refresh (`request_immediate_rescan`), and a send entry point
+  (`submit_text_message` → `sms_send_finished`) that **nothing calls yet** — the future dongle-backed sender will use it.
   The scan loop catches and logs every exception so the thread can never die silently.
 - `sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
-- Réception, Boîte d'envoi and Historique are empty placeholders for now.
+- Réception and Historique are empty placeholders for now.
 
 Scripts (still useful, run outside the app):
 - `huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).
@@ -151,14 +170,15 @@ Legacy (superseded by the desktop design, kept only as reference — mine it for
 ## Roadmap
 
 1. ✅ App shell: sidebar with icons, Devices screen (state, IMEI, operator, signal, SIM, network, Refresh).
-2. ✅ Compose: one number + one message, single SMS. Next: verify a real send from the app.
+2. ✅ Compose → queue: lists + template + Lancer → messages `WAITING` in the Outbox (nothing is sent yet).
 3. Privileged helper for the mode switch (so replug recovers without a manual `sudo`).
-4. **Outbox + Historique**: persist every message in SQLite with status sent / failed / unknown; retry failed only.
-   (Outbox = queue of pending messages; Historique = archive of what was sent/received — confirm with the owner.)
+4. Queue worker: ✅ simulated (Envoyer/Pause/Arrêter, states SENDING → SENT/FAILED). **Next: real sending** — a dongle-backed
+   `MessageSender` (steady 5–10 s rate, `+CMGS` → SENT, refusal → FAILED, no confirmation → UNKNOWN, dongle absent →
+   pause), plus a confirmation before the first real run. Then Historique.
+   (Outbox = the queue; Historique = archive of what was sent/received — confirm with the owner.)
 5. Contacts + import: ✅ named lists, Excel/CSV import, column mapping, `+221` normalization, duplicate/invalid
    report, rename/delete. Still to do: blacklist, edit a single contact, virtual table for 10k+ contacts.
-6. **Campaigns (main feature, next)**: bulk send from a contact list, templates with `{variables}`, char/part counter, steady rate,
-   pause/resume/stop, sleep prevention.
+6. Campaigns extras: pause/resume/stop per campaign, sleep prevention, more variables (columns 3–10), multipart SMS.
 7. Devices extras: credit via USSD `*222#` (needs GSM 7-bit packed hex unpacker), test-SMS button.
 8. Inbox: CNMI notifications, UCS2 decode, PDU-mode multipart reassembly, auto-blacklist on "STOP".
 9. Extras: UCS2 + multipart sending, delivery reports (`AT+CSMP`, `AT+CNMI`), scheduling, multi-dongle

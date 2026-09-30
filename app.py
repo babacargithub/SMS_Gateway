@@ -14,6 +14,9 @@ from PySide6.QtWidgets import (
 from compose_page import ComposePage
 from contact_store import ContactStore
 from contacts_page import ContactsPage
+from message_sender import SimulatedMessageSender
+from outbox_page import OutboxPage
+from outbox_store import OutboxStore
 from devices_page import DevicesPage
 from dongle_monitor import DongleMonitor
 from sidebar import SIDEBAR_SECTION_NAMES, Sidebar
@@ -38,13 +41,18 @@ class MainWindow(QMainWindow):
         self.sidebar_list = Sidebar()
 
         self.devices_page = DevicesPage()
-        self.compose_page = ComposePage()
         self.contact_store = ContactStore()
+        self.outbox_store = OutboxStore()
+        self.outbox_store.recover_interrupted_sends()  # messages cut off mid-send last time become "Non confirmé"
+        self.message_sender = SimulatedMessageSender()  # swap for the dongle-backed sender when real sending exists
+        self.compose_page = ComposePage(self.contact_store, self.outbox_store)
+        self.outbox_page = OutboxPage(self.outbox_store, self.message_sender)
         self.contacts_page = ContactsPage(self.contact_store)
         dedicated_pages = {
             "Appareils": self.devices_page,
             "Composer": self.compose_page,
             "Contacts": self.contacts_page,
+            "Boîte d'envoi": self.outbox_page,
         }
         self.content_stack = QStackedWidget()
         for section_name in SIDEBAR_SECTION_NAMES:
@@ -53,8 +61,7 @@ class MainWindow(QMainWindow):
         self.dongle_monitor = DongleMonitor()
         self.dongle_monitor.statuses_updated.connect(self.devices_page.show_statuses)
         self.devices_page.refresh_requested.connect(self.dongle_monitor.request_immediate_rescan)
-        self.compose_page.send_requested.connect(self.dongle_monitor.submit_text_message)
-        self.dongle_monitor.sms_send_finished.connect(self.compose_page.show_send_result)
+        self.compose_page.messages_queued.connect(self.show_outbox)
         self.dongle_monitor.start()
 
         self.sidebar_list.currentRowChanged.connect(self.content_stack.setCurrentIndex)
@@ -68,7 +75,11 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.content_stack)
         self.setCentralWidget(central_widget)
 
+    def show_outbox(self):
+        self.sidebar_list.setCurrentRow(SIDEBAR_SECTION_NAMES.index("Boîte d'envoi"))
+
     def closeEvent(self, close_event):
+        self.outbox_page.shutdown()
         self.dongle_monitor.stop()
         self.dongle_monitor.wait(5000)
         super().closeEvent(close_event)

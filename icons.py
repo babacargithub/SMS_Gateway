@@ -30,3 +30,20 @@ def build_colored_icon(svg_shapes, hex_color):
     for icon_mode in (QIcon.Normal, QIcon.Active, QIcon.Selected):
         colored_icon.addPixmap(icon_pixmap, icon_mode)
     return colored_icon
+
+PLAY_ICON_SHAPES = '<polygon points="5 3 19 12 5 21 5 3"/>'
+PAUSE_ICON_SHAPES = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'
+STOP_ICON_SHAPES = '<rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>'
+CLOCK_ICON_SHAPES = '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'
+REFRESH_ICON_SHAPES = (
+    '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>'
+    '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>'
+)
+CHECK_CIRCLE_ICON_SHAPES = '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'
+X_CIRCLE_ICON_SHAPES = (
+    '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'
+)
+HELP_CIRCLE_ICON_SHAPES = (
+    '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>'
+    '<line x1="12" y1="17" x2="12.01" y2="17"/>'
+)
