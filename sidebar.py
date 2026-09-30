@@ -41,6 +41,7 @@ SIDEBAR_SECTIONS = [
 ]
 
 SIDEBAR_SECTION_NAMES = [section_name for section_name, _, _ in SIDEBAR_SECTIONS]
+INBOX_SECTION_NAME = "Réception"
 
 SEPARATOR_COLOR = QColor(128, 128, 128, 64)
 SEPARATOR_INSET_LEFT_PIXELS = 14
@@ -102,3 +103,11 @@ class Sidebar(QListWidget):
         self.setItemDelegate(SeparatorDelegate(self))
         for section_name, hex_color, svg_shapes in SIDEBAR_SECTIONS:
             self.addItem(QListWidgetItem(build_colored_icon(svg_shapes, hex_color), section_name))
+
+    def show_unread_inbox_count(self, unread_count):
+        """'Réception (3)' in bold while some received messages are unread."""
+        inbox_item = self.item(SIDEBAR_SECTION_NAMES.index(INBOX_SECTION_NAME))
+        inbox_item.setText(f"{INBOX_SECTION_NAME} ({unread_count})" if unread_count else INBOX_SECTION_NAME)
+        item_font = inbox_item.font()
+        item_font.setBold(unread_count > 0)
+        inbox_item.setFont(item_font)

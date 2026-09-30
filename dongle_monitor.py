@@ -1,6 +1,7 @@
 """Background thread that owns every USB dongle and publishes status snapshots to the UI."""
 import logging
 import queue
+import sqlite3
 import subprocess
 import threading
 import time
@@ -21,13 +22,15 @@ RETRY_AFTER_ERROR_SECONDS = 10
 class DongleMonitor(QThread):
     statuses_updated = Signal(list)
     sms_send_finished = Signal(str, str, str)  # destination number, outcome, detail
+    inbox_messages_received = Signal(int)  # how many new messages were stored in the database
 
     OUTCOME_SENT = "sent"
     OUTCOME_FAILED = "failed"
     OUTCOME_UNKNOWN = "unknown"
 
-    def __init__(self):
+    def __init__(self, inbox_store=None):
         super().__init__()
+        self.inbox_store = inbox_store
         self.open_connections = {}   # usb_location -> DongleConnection
         self.current_statuses = {}   # usb_location -> DongleStatus
         self.last_health_check_at = {}
@@ -63,6 +66,7 @@ class DongleMonitor(QThread):
             self._send_pending_messages()
             try:
                 self._scan_once(usb_backend)
+                self._drain_sim_inboxes()
             except Exception:  # a bad scan must never kill the monitor for good
                 logging.exception("Dongle scan failed; retrying on next cycle")
             self.wake_up_requested.wait(SCAN_INTERVAL_MS / 1000)
@@ -90,6 +94,28 @@ class DongleMonitor(QThread):
                 self.sms_send_finished.emit(destination_number, self.OUTCOME_UNKNOWN, str(uncertainty))
             except (usb.core.USBError, RuntimeError) as send_error:
                 self.sms_send_finished.emit(destination_number, self.OUTCOME_FAILED, str(send_error))
+
+    def _drain_sim_inboxes(self):
+        """Move every message from each ready SIM into the database, then free the SIM slots.
+        A message is deleted from the SIM only after the database has saved it."""
+        if self.inbox_store is None:
+            return
+        for usb_location, connection in list(self.open_connections.items()):
+            status = self.current_statuses.get(usb_location)
+            if status is None or status.state != dongle.STATE_READY:
+                continue
+            try:
+                received_messages = connection.read_stored_text_messages()
+                if not received_messages:
+                    continue
+                new_message_count = self.inbox_store.store_received_messages(received_messages)
+                if new_message_count:
+                    self.inbox_messages_received.emit(new_message_count)
+                for received_message in received_messages:
+                    if not connection.delete_stored_message(received_message.sim_index):
+                        logging.warning("SIM slot %s could not be freed", received_message.sim_index)
+            except (usb.core.USBError, RuntimeError, sqlite3.Error):
+                logging.exception("Reading the SIM inbox failed; retrying on next cycle")
 
     def _scan_once(self, usb_backend):
         full_refresh = self.force_full_refresh

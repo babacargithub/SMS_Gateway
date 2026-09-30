@@ -127,7 +127,11 @@ Desktop app (current):
   (`submit_text_message` → `sms_send_finished`) that **nothing calls yet** — the future dongle-backed sender will use it.
   The scan loop catches and logs every exception so the thread can never die silently.
 - `sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
-- Réception and Historique are empty placeholders for now.
+- `received_sms_parser.py` — pure: parses `AT+CMGL="ALL"` (text mode + `AT+CSDH=1` for the DCS) into `ReceivedSms`; UCS2 bodies decoded.
+- `inbox_store.py` — SQLite `received_messages` (unique on sender+time+text, `is_read`); sender name looked up from contacts.
+- `inbox_page.py` — Réception: table (unread in bold), preview pane, selecting marks read, mark-all-read, delete (confirm). Sidebar shows `Réception (n)`.
+- `DongleMonitor._drain_sim_inboxes` — every scan cycle: read SIM → store in DB → only then `AT+CMGD` each slot; emits `inbox_messages_received` → `notification_sound.py` (afplay Glass.aiff). **Not yet verified with the real dongle.** Long SMS still arrive as separate parts (text mode; PDU reassembly still to do).
+- Historique is an empty placeholder for now.
 
 Scripts (still useful, run outside the app):
 - `huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).

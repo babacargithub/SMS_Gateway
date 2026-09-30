@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from received_sms_parser import parse_sms_list_reply
+
 import usb.backend.libusb1
 import usb.core
 import usb.util
@@ -18,6 +20,7 @@ LIBUSB_LIBRARY_PATH = "/opt/homebrew/lib/libusb-1.0.dylib"
 VENDOR_SPECIFIC_INTERFACE_CLASS = 0xFF
 
 SEND_TIMEOUT_SECONDS = 30
+LIST_MESSAGES_TIMEOUT_SECONDS = 15
 
 STATE_DETECTED = "Détecté"
 STATE_SWITCHING = "Changement de mode"
@@ -36,6 +39,12 @@ class SendOutcomeUnknown(Exception):
 
 def is_final_reply(reply_text):
     return reply_text.rstrip().endswith("OK") or "ERROR" in reply_text
+
+
+def is_end_of_message_list(reply_text):
+    """A message body may itself end with 'OK', so only an 'OK' on its own line ends the list."""
+    stripped_reply = reply_text.rstrip()
+    return stripped_reply.endswith("\nOK") or stripped_reply == "OK" or "+CMS ERROR" in stripped_reply or stripped_reply.endswith("\nERROR")
 
 
 @dataclass
@@ -206,6 +215,22 @@ class DongleConnection:
         if "ERROR" in final_reply:
             raise SendRejected(final_reply)
         raise SendOutcomeUnknown("Aucune confirmation du dongle")
+
+    def read_stored_text_messages(self):
+        """Every received message currently on the SIM (text mode, decoded). Raises RuntimeError if the dongle refuses."""
+        self.send_at_command("AT+CMGF=1")
+        self.send_at_command("AT+CSDH=1")  # shows the data coding scheme, so UCS2 bodies can be recognised
+        self.send_at_command('AT+CPMS="SM","SM","SM"')
+        list_reply = self._write_and_read('AT+CMGL="ALL"\r', LIST_MESSAGES_TIMEOUT_SECONDS, is_end_of_message_list)
+        if not is_end_of_message_list(list_reply):
+            raise RuntimeError("Lecture des messages de la SIM incomplète")
+        if "+CMS ERROR" in list_reply:
+            raise RuntimeError(f"La SIM a refusé la lecture des messages : {list_reply}")
+        return parse_sms_list_reply(list_reply)
+
+    def delete_stored_message(self, sim_index):
+        """Free one SIM slot. Returns True when the dongle confirmed."""
+        return "OK" in self.send_at_command(f"AT+CMGD={sim_index}", wait_seconds=5.0)
 
     def read_identity(self):
         imei_match = re.search(r"\d{15}", self.send_at_command("AT+CGSN"))

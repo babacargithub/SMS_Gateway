@@ -18,6 +18,9 @@ from message_sender import SimulatedMessageSender
 from outbox_page import OutboxPage
 from outbox_store import OutboxStore
 from devices_page import DevicesPage
+from inbox_page import InboxPage
+from inbox_store import InboxStore
+from notification_sound import play_new_message_sound
 from dongle_monitor import DongleMonitor
 from sidebar import SIDEBAR_SECTION_NAMES, Sidebar
 
@@ -48,9 +51,12 @@ class MainWindow(QMainWindow):
         self.compose_page = ComposePage(self.contact_store, self.outbox_store)
         self.outbox_page = OutboxPage(self.outbox_store, self.message_sender)
         self.contacts_page = ContactsPage(self.contact_store)
+        self.inbox_store = InboxStore()
+        self.inbox_page = InboxPage(self.inbox_store)
         dedicated_pages = {
             "Appareils": self.devices_page,
             "Composer": self.compose_page,
+            "Réception": self.inbox_page,
             "Contacts": self.contacts_page,
             "Boîte d'envoi": self.outbox_page,
         }
@@ -58,10 +64,13 @@ class MainWindow(QMainWindow):
         for section_name in SIDEBAR_SECTION_NAMES:
             self.content_stack.addWidget(dedicated_pages.get(section_name) or build_placeholder_page(section_name))
 
-        self.dongle_monitor = DongleMonitor()
+        self.dongle_monitor = DongleMonitor(self.inbox_store)
         self.dongle_monitor.statuses_updated.connect(self.devices_page.show_statuses)
         self.devices_page.refresh_requested.connect(self.dongle_monitor.request_immediate_rescan)
         self.compose_page.messages_queued.connect(self.show_outbox)
+        self.dongle_monitor.inbox_messages_received.connect(self.handle_new_inbox_messages)
+        self.inbox_page.unread_count_changed.connect(self.sidebar_list.show_unread_inbox_count)
+        self.sidebar_list.show_unread_inbox_count(self.inbox_store.count_unread())
         self.dongle_monitor.start()
 
         self.sidebar_list.currentRowChanged.connect(self.content_stack.setCurrentIndex)
@@ -74,6 +83,10 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.sidebar_list)
         central_layout.addWidget(self.content_stack)
         self.setCentralWidget(central_widget)
+
+    def handle_new_inbox_messages(self, new_message_count):
+        play_new_message_sound()
+        self.inbox_page.reload()
 
     def show_outbox(self):
         self.sidebar_list.setCurrentRow(SIDEBAR_SECTION_NAMES.index("Boîte d'envoi"))
