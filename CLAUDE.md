@@ -41,8 +41,19 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
   and keeping the one that answers `AT` with `OK`.
 - **Root (tested):** the CD-ROM → modem **switch needs root** (`USBError: Access denied`, even after
   `diskutil eject`). **Modem mode works fine as a normal user** (IMEI, signal, SIM, network all read without sudo).
-  So only the switch needs privilege — planned fix: a small privileged helper for that one step, so the app
-  never runs as root. Until then, run `sudo ~/usbenv/bin/python huawei_switch.py` after each replug.
+  So only the switch needs privilege. **Also tested (debugged with root):** a LaunchDaemon cannot do it even as root — the kernel logs
+  `(Sandbox) System Policy: deny iokit-open-service IOUSBHostInterface` for any process outside a login session; Full Disk
+  Access on Python did not help; `launchctl asuser` from a daemon did not help; a device-level SET_FEATURE does not switch this
+  model. **Root is not enough; the process must trace back to a login session** — it works as root from iTerm (macOS then does
+  a TCC check attributed to iTerm) and is denied outright (no TCC check) from any launchd job, daemon or agent. **Current
+  design (`mode_switcher/`):** the app itself, when its monitor sees `12d1:14fe`, runs
+  `sudo -n <helper python> <helper> --switch-now` (`dongle.switch_dongles_to_modem_mode_through_helper`, retried every 20 s).
+  ONE passwordless sudoers rule (`/etc/sudoers.d/sms-gateway-mode-switcher`), for a command with no arguments, in the
+  root-owned `/usr/local/libexec/sms-gateway/` (own venv from `/usr/bin/python3`). Install with
+  `sudo ./mode_switcher/install_switcher.sh` (also removes any old daemon/agent), remove with `uninstall_switcher.sh`.
+  **Verified** by running the helper from the terminal session: dongle went 14fe → 151d. Consequence: the app must be
+  launched from a terminal (like today); a Finder-launched packaged app would need its own privacy grant. Shows « Détecté » for
+  25 s, then a French error (missing helper / last failure). `huawei_switch.py` remains as a manual fallback.
 - `diskutil eject` can hang (it timed out at 15 s once) — always catch `subprocess.SubprocessError`.
 - The dongle may emit unsolicited lines (`^RSSI`, `^HCSQ`, `^BOOT`…); flush before each command.
   `AT^CURC=0` disables them.
@@ -124,9 +135,9 @@ Desktop app (current):
   SENT/FAILED/UNKNOWN. Pause/stop never cut a message in half (the in-flight one finishes first); stop leaves the rest
   `WAITING`. Messages cut off by a crash (`SENDING` at startup) become `UNKNOWN` and are never resent automatically.
 - `devices_page.py` — table of dongles (state, IMEI, operator, signal bars + dBm, SIM, network, USB) and Refresh.
-- `dongle.py` — **device layer, no UI**: USB scan/switch, `DongleConnection` (AT port, timeouts, flush),
+- `dongle.py` — **device layer, no UI**: USB scan, `DongleConnection` (AT port, timeouts, flush),
   `send_text_message`, live status reading, `SendRejected` / `SendOutcomeUnknown`.
-- `dongle_monitor.py` — `DongleMonitor(QThread)`: scans USB every 3 s, auto-switches CD-ROM dongles,
+- `dongle_monitor.py` — `DongleMonitor(QThread)`: scans USB every 3 s, reports CD-ROM dongles (the app asks the root helper to switch them),
   health check every 30 s (3 misses → reconnect), Refresh (`request_immediate_rescan`), and a send entry point
   (`submit_text_message` → a `SendRequest` the caller waits on) used by `DongleMessageSender`; requests still queued when the monitor closes are refused.
   The scan loop catches and logs every exception so the thread can never die silently.
@@ -180,7 +191,7 @@ Legacy (superseded by the desktop design, kept only as reference — mine it for
 
 1. ✅ App shell: sidebar with icons, Devices screen (state, IMEI, operator, signal, SIM, network, Refresh).
 2. ✅ Compose → queue: lists + template + Lancer → messages `WAITING` in the Outbox (nothing is sent yet).
-3. Privileged helper for the mode switch (so replug recovers without a manual `sudo`).
+3. ✅ Privileged helper for the mode switch (sudo rule + root-owned helper in `mode_switcher/`, called by the app).
 4. Queue worker: ✅ real sending through the dongle (5–10 s steady rate, confirmation before a run, pauses when no dongle) —
    **awaiting the owner's first real test**. Historique (sent messages) ✅. Received messages stay in Réception.
 5. Contacts + import: ✅ named lists, Excel/CSV import, column mapping, `+221` normalization, duplicate/invalid

@@ -2,7 +2,6 @@
 import logging
 import queue
 import sqlite3
-import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,6 +17,8 @@ HEALTH_CHECK_INTERVAL_SECONDS = 30
 MISSED_REPLIES_BEFORE_RESET = 3
 SWITCH_WAIT_SECONDS = 20
 RETRY_AFTER_ERROR_SECONDS = 10
+MODE_SWITCHER_GRACE_SECONDS = 25  # the helper switches within ~3 s, then the dongle needs ~10 s to come back
+RETRY_SWITCH_AFTER_SECONDS = 20
 
 
 OUTCOME_SENT = "sent"
@@ -73,6 +74,9 @@ class DongleMonitor(QThread):
         self.missed_replies = {}
         self.retry_not_before = {}
         self.switching_started_at = {}
+        self.cdrom_first_seen_at = {}   # usb_location -> when a dongle was first seen in CD-ROM mode
+        self.next_switch_attempt_at = {}
+        self.last_switch_error = {}
         self.wake_up_requested = threading.Event()
         self.pending_messages = queue.Queue()
         self.force_full_refresh = False
@@ -182,6 +186,10 @@ class DongleMonitor(QThread):
         }
         if modem_devices:
             self.switching_started_at.clear()
+        for usb_location in list(self.cdrom_first_seen_at):
+            if usb_location not in cdrom_devices:
+                del self.cdrom_first_seen_at[usb_location]
+                self.switching_started_at[usb_location] = time.time()  # it left CD-ROM mode: the helper switched it
 
         self._forget_unplugged_dongles(modem_devices)
         for usb_location, modem_device in modem_devices.items():
@@ -253,14 +261,27 @@ class DongleMonitor(QThread):
                 self._drop_connection(usb_location)  # reconnects on the next scan
 
     def _handle_cdrom(self, usb_location, cdrom_device):
-        if time.time() < self.retry_not_before.get(usb_location, 0):
-            return
-        self.current_statuses[usb_location] = DongleStatus(usb_location, dongle.STATE_DETECTED)
-        try:
-            dongle.switch_to_modem_mode(cdrom_device)
-            self.switching_started_at[usb_location] = time.time()
-        except (usb.core.USBError, RuntimeError, OSError, subprocess.SubprocessError) as switch_error:
+        """Ask the root helper (mode_switcher/) to switch the dongle, retrying every few seconds, and report progress."""
+        first_seen_at = self.cdrom_first_seen_at.setdefault(usb_location, time.time())
+        if not dongle.is_mode_switch_helper_installed():
             self.current_statuses[usb_location] = DongleStatus(
-                usb_location, dongle.STATE_ERROR, error_message=f"Échec du changement de mode : {switch_error}"
+                usb_location,
+                dongle.STATE_ERROR,
+                error_message="Assistant de changement de mode non installé (sudo ./mode_switcher/install_switcher.sh)",
             )
-        self.retry_not_before[usb_location] = time.time() + RETRY_AFTER_ERROR_SECONDS
+            return
+        if time.time() >= self.next_switch_attempt_at.get(usb_location, 0):
+            self.next_switch_attempt_at[usb_location] = time.time() + RETRY_SWITCH_AFTER_SECONDS
+            try:
+                dongle.switch_dongles_to_modem_mode_through_helper()
+                self.last_switch_error.pop(usb_location, None)
+            except RuntimeError as switch_error:
+                self.last_switch_error[usb_location] = str(switch_error)
+        if time.time() - first_seen_at < MODE_SWITCHER_GRACE_SECONDS:
+            self.current_statuses[usb_location] = DongleStatus(usb_location, dongle.STATE_DETECTED)
+        else:
+            self.current_statuses[usb_location] = DongleStatus(
+                usb_location,
+                dongle.STATE_ERROR,
+                error_message=self.last_switch_error.get(usb_location, "Le changement de mode n'a pas abouti"),
+            )

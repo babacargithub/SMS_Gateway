@@ -1,4 +1,5 @@
 """Device layer: raw-USB access to Huawei dongles. No UI code in here."""
+import os
 import re
 import subprocess
 import time
@@ -14,10 +15,13 @@ import usb.util
 HUAWEI_VENDOR_ID = 0x12D1
 CDROM_PRODUCT_ID = 0x14FE
 MODEM_PRODUCT_ID = 0x151D
-MODE_SWITCH_MESSAGE = bytes.fromhex("55534243123456780000000000000011062000000100000000000000000000")
-CDROM_VOLUME_PATH = "/Volumes/Internet Everywhere"
 LIBUSB_LIBRARY_PATH = "/opt/homebrew/lib/libusb-1.0.dylib"
 VENDOR_SPECIFIC_INTERFACE_CLASS = 0xFF
+
+MODE_SWITCH_HELPER_PYTHON = "/usr/local/libexec/sms-gateway/venv/bin/python"
+MODE_SWITCH_HELPER_SCRIPT = "/usr/local/libexec/sms-gateway/dongle_mode_switcher.py"
+MODE_SWITCH_HELPER_TIMEOUT_SECONDS = 60
+SUDO_MISSING_RULE_EXIT_CODE = 1  # `sudo -n` exits with 1 when it would have asked for a password
 
 SEND_TIMEOUT_SECONDS = 30
 LIST_MESSAGES_TIMEOUT_SECONDS = 15
@@ -81,27 +85,25 @@ def find_huawei_devices(usb_backend, product_id):
     )
 
 
-def eject_cdrom_volume():
-    """macOS mounts the virtual CD-ROM and holds it; it must be ejected before the switch."""
-    subprocess.run(
-        ["diskutil", "eject", CDROM_VOLUME_PATH],
-        capture_output=True,
-        timeout=15,
-    )
+def is_mode_switch_helper_installed():
+    return os.path.exists(MODE_SWITCH_HELPER_PYTHON) and os.path.exists(MODE_SWITCH_HELPER_SCRIPT)
 
 
-def switch_to_modem_mode(cdrom_usb_device):
-    eject_cdrom_volume()
-    interface_zero = cdrom_usb_device.get_active_configuration()[(0, 0)]
-    bulk_out_endpoint = usb.util.find_descriptor(
-        interface_zero,
-        custom_match=lambda endpoint: usb.util.endpoint_direction(endpoint.bEndpointAddress)
-        == usb.util.ENDPOINT_OUT,
-    )
-    if bulk_out_endpoint is None:
-        raise RuntimeError("Aucun point de sortie sur l'interface 0 du périphérique CD-ROM")
-    usb.util.claim_interface(cdrom_usb_device, 0)
-    bulk_out_endpoint.write(MODE_SWITCH_MESSAGE)
+def switch_dongles_to_modem_mode_through_helper():
+    """Switching needs root, and macOS only lets a process that belongs to a login session (like this app, started
+    from a terminal) open the dongle's storage interface. So the app calls the root-owned helper through ONE passwordless
+    sudo rule installed by mode_switcher/install_switcher.sh. Raises RuntimeError with a French message on failure."""
+    switch_command = ["/usr/bin/sudo", "-n", MODE_SWITCH_HELPER_PYTHON, MODE_SWITCH_HELPER_SCRIPT, "--switch-now"]
+    try:
+        completed_process = subprocess.run(
+            switch_command, capture_output=True, text=True, timeout=MODE_SWITCH_HELPER_TIMEOUT_SECONDS
+        )
+    except subprocess.SubprocessError as helper_error:
+        raise RuntimeError(f"L'assistant de changement de mode ne répond pas : {helper_error}")
+    if completed_process.returncode != 0:
+        helper_output = (completed_process.stderr or "").strip().splitlines()
+        last_helper_line = helper_output[-1] if helper_output else ""
+        raise RuntimeError(f"Échec du changement de mode : {last_helper_line}")
 
 
 def signal_value_to_dbm(csq_value):
