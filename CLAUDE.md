@@ -16,7 +16,15 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
 - **Storage:** SQLite, single file, backed up regularly (not built yet).
 - **Runs as:** the logged-in user, launched by hand. No launchd, no root for the app itself.
 - **Contacts:** imported from Excel/CSV only (no external API for now).
-- **Language of the UI:** sidebar mixes English with "Historique" (French); keep labels as the owner names them.
+- **UI language: French only.** Every label, message, tooltip, error shown to the user, and the Qt standard
+  buttons (Oui/Non/Annuler, via `qtbase_fr.qm` loaded in `app.py`), must be in French. Code, comments and
+  identifiers stay in English. Use French typography: « guillemets », space before `:` `?` `!`, `8 813`
+  (narrow no-break space) and `30/09/2026`. Shared wording helpers live in `french_labels.py`.
+- **Contacts are organised in named lists** (e.g. "Fidèles clients"). The list name is asked at import; a file can
+  also be imported into an existing list (numbers already in that list are skipped). The same number may be in
+  several lists (dedupe when a send targets several lists). Deleting a list deletes its contacts (ON DELETE CASCADE);
+  every delete asks for confirmation with "Non" as the default button. List names are unique ignoring case and
+  accents-case (compared with `casefold()` in Python, because SQLite `NOCASE` only handles A–Z).
 
 ## Hardware facts (verified by hand)
 
@@ -80,7 +88,18 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
 Desktop app (current):
 - `app.py` — entry point and `MainWindow` (sidebar + stacked pages). Owns the `DongleMonitor` thread.
 - `sidebar.py` — `Sidebar`: colored SVG icons, separators (custom delegate, none after the last item),
-  order: Compose, Inbox, Contacts, Outbox, Historique, Devices. Pages are matched **by name**, not position.
+  order: Composer, Réception, Contacts, Boîte d'envoi, Historique, Appareils. Pages are matched **by name** in
+  `app.py`, so renaming a sidebar entry means updating the key there too.
+- `icons.py` — shared SVG → colored `QIcon` helper (`build_colored_icon`) and icon shapes (edit, trash).
+- `french_labels.py` — French wording helpers (contact count with plural/thousands, dates, SIM status).
+- `contact_import.py` — pure: read `.xlsx`/`.csv` (`;` separator, latin-1 fallback), guess phone/name columns,
+  validate + dedupe rows into an `ImportPlan`; other columns are kept as custom fields (future `{variables}`).
+- `contact_store.py` — SQLite (`~/Library/Application Support/SMS Gateway/sms_gateway.db`): `contact_lists` +
+  `contacts(list_id, UNIQUE(list_id, phone_number))`. Short-lived connection per call. Auto-migrates the older
+  list-less schema into one list, writing a `.before-lists.bak` copy first.
+- `contacts_page.py` — opens on the lists (name, count, date, rename ✎ / delete 🗑 icon buttons); clicking a list
+  shows its contacts (search, delete selection). `import_contacts_dialog.py` — column mapping, validation report,
+  destination list (new name or existing list).
 - `compose_page.py` — number + message fields, live validation, 160-char counter, Send, result states.
 - `devices_page.py` — table of dongles (state, IMEI, operator, signal bars + dBm, SIM, network, USB) and Refresh.
 - `dongle.py` — **device layer, no UI**: USB scan/switch, `DongleConnection` (AT port, timeouts, flush),
@@ -89,7 +108,7 @@ Desktop app (current):
   health check every 30 s (3 misses → reconnect), send queue, Refresh (`request_immediate_rescan`).
   The scan loop catches and logs every exception so the thread can never die silently.
 - `sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
-- Pages other than Compose and Devices are empty placeholders for now.
+- Réception, Boîte d'envoi and Historique are empty placeholders for now.
 
 Scripts (still useful, run outside the app):
 - `huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).
@@ -136,9 +155,9 @@ Legacy (superseded by the desktop design, kept only as reference — mine it for
 3. Privileged helper for the mode switch (so replug recovers without a manual `sudo`).
 4. **Outbox + Historique**: persist every message in SQLite with status sent / failed / unknown; retry failed only.
    (Outbox = queue of pending messages; Historique = archive of what was sent/received — confirm with the owner.)
-5. Contacts + import: Excel (`openpyxl`) and CSV (handle `;` separator and UTF-8 BOM), column mapping,
-   `+221` normalization, duplicates and invalid-number report, groups, custom fields, blacklist.
-6. Campaigns: bulk send from imported contacts, templates with `{variables}`, char/part counter, steady rate,
+5. Contacts + import: ✅ named lists, Excel/CSV import, column mapping, `+221` normalization, duplicate/invalid
+   report, rename/delete. Still to do: blacklist, edit a single contact, virtual table for 10k+ contacts.
+6. **Campaigns (main feature, next)**: bulk send from a contact list, templates with `{variables}`, char/part counter, steady rate,
    pause/resume/stop, sleep prevention.
 7. Devices extras: credit via USSD `*222#` (needs GSM 7-bit packed hex unpacker), test-SMS button.
 8. Inbox: CNMI notifications, UCS2 decode, PDU-mode multipart reassembly, auto-blacklist on "STOP".

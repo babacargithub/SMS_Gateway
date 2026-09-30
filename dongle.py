@@ -19,11 +19,11 @@ VENDOR_SPECIFIC_INTERFACE_CLASS = 0xFF
 
 SEND_TIMEOUT_SECONDS = 30
 
-STATE_DETECTED = "Detected"
-STATE_SWITCHING = "Switching"
-STATE_INITIALIZING = "Initializing"
-STATE_READY = "Ready"
-STATE_ERROR = "Error"
+STATE_DETECTED = "Détecté"
+STATE_SWITCHING = "Changement de mode"
+STATE_INITIALIZING = "Initialisation"
+STATE_READY = "Prêt"
+STATE_ERROR = "Erreur"
 
 
 class SendRejected(Exception):
@@ -90,7 +90,7 @@ def switch_to_modem_mode(cdrom_usb_device):
         == usb.util.ENDPOINT_OUT,
     )
     if bulk_out_endpoint is None:
-        raise RuntimeError("No OUT endpoint on interface 0 of the CD-ROM device")
+        raise RuntimeError("Aucun point de sortie sur l'interface 0 du périphérique CD-ROM")
     usb.util.claim_interface(cdrom_usb_device, 0)
     bulk_out_endpoint.write(MODE_SWITCH_MESSAGE)
 
@@ -143,7 +143,7 @@ class DongleConnection:
                 self.send_at_command("AT^CURC=0")
                 return
             usb.util.release_interface(self.usb_device, interface.bInterfaceNumber)
-        raise RuntimeError("No interface answered 'AT'")
+        raise RuntimeError("Aucune interface n'a répondu à 'AT'")
 
     def close(self):
         try:
@@ -196,16 +196,16 @@ class DongleConnection:
         )
         if not prompt_reply.endswith(">"):
             self._write_and_read("\x1b", 1.0, is_final_reply)  # ESC cancels a half-open send
-            raise SendRejected(prompt_reply or "No prompt from the dongle")
+            raise SendRejected(prompt_reply or "Le dongle n'a pas demandé le texte du message")
         try:
             final_reply = self._write_and_read(message_text + "\x1a", SEND_TIMEOUT_SECONDS, is_final_reply)
         except usb.core.USBError as usb_error:
-            raise SendOutcomeUnknown(f"USB error while sending: {usb_error}")
+            raise SendOutcomeUnknown(f"Erreur USB pendant l'envoi : {usb_error}")
         if "+CMGS:" in final_reply:
             return final_reply
         if "ERROR" in final_reply:
             raise SendRejected(final_reply)
-        raise SendOutcomeUnknown("No confirmation from the dongle")
+        raise SendOutcomeUnknown("Aucune confirmation du dongle")
 
     def read_identity(self):
         imei_match = re.search(r"\d{15}", self.send_at_command("AT+CGSN"))
@@ -216,17 +216,17 @@ class DongleConnection:
         signal_reply = self.send_at_command("AT+CSQ")
         signal_match = re.search(r"\+CSQ:\s*(\d+),", signal_reply)
         if signal_match is None:
-            raise RuntimeError("No answer to AT+CSQ")
+            raise RuntimeError("Pas de réponse à AT+CSQ")
         status.signal_dbm = signal_value_to_dbm(int(signal_match.group(1)))
         status.signal_bars = dbm_to_bars(status.signal_dbm)
 
         sim_match = re.search(r"\+CPIN:\s*(.+)", self.send_at_command("AT+CPIN?"))
-        status.sim_status = sim_match.group(1).strip() if sim_match else "Unknown"
+        status.sim_status = sim_match.group(1).strip() if sim_match else "Inconnu"
 
         registration_match = re.search(r"\+CREG:\s*\d+,(\d+)", self.send_at_command("AT+CREG?"))
-        registration_labels = {"0": "Not registered", "1": "Home", "2": "Searching", "3": "Denied", "5": "Roaming"}
+        registration_labels = {"0": "Non enregistré", "1": "Réseau local", "2": "Recherche", "3": "Refusé", "5": "Itinérance"}
         status.network_registration = (
-            registration_labels.get(registration_match.group(1), "Unknown") if registration_match else "Unknown"
+            registration_labels.get(registration_match.group(1), "Inconnu") if registration_match else "Inconnu"
         )
 
         operator_match = re.search(r'\+COPS:\s*\d+,\d+,"([^"]*)"', self.send_at_command("AT+COPS?"))

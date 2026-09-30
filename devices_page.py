@@ -11,12 +11,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-COLUMN_TITLES = ["State", "IMEI", "Operator", "Signal", "SIM", "Network", "USB", "Details"]
+from french_labels import translate_sim_status
+
+COLUMN_TITLES = ["État", "IMEI", "Opérateur", "Signal", "SIM", "Réseau", "USB", "Détails"]
 
 
 def format_signal(signal_dbm, signal_bars):
     if signal_dbm is None:
-        return "Unknown"
+        return "Inconnu"
     filled_bars = "●" * signal_bars + "○" * (4 - signal_bars)
     return f"{filled_bars}  {signal_dbm} dBm"
 
@@ -26,14 +28,14 @@ class DevicesPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.setToolTip("Rescan USB and re-read every dongle now")
+        self.refresh_button = QPushButton("Actualiser")
+        self.refresh_button.setToolTip("Rescanner l'USB et relire chaque dongle maintenant")
         self.refresh_button.clicked.connect(self.refresh_requested)
         toolbar_layout = QHBoxLayout()
         toolbar_layout.addWidget(self.refresh_button)
         toolbar_layout.addStretch()
 
-        self.empty_state_label = QLabel("No dongle detected. Plug in a Huawei dongle.")
+        self.empty_state_label = QLabel("Aucun dongle détecté. Branchez un dongle Huawei.")
         self.empty_state_label.setAlignment(Qt.AlignCenter)
         self.empty_state_label.setStyleSheet("font-size: 16px; color: gray;")
 
@@ -60,7 +62,7 @@ class DevicesPage(QWidget):
                 status.imei or "-",
                 status.operator_name or "-",
                 format_signal(status.signal_dbm, status.signal_bars),
-                status.sim_status or "-",
+                translate_sim_status(status.sim_status) if status.sim_status else "-",
                 status.network_registration or "-",
                 status.usb_location,
                 status.error_message or "",

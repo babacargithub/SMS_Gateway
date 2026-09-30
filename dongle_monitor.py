@@ -56,7 +56,7 @@ class DongleMonitor(QThread):
         usb_backend = dongle.load_usb_backend()
         if usb_backend is None:
             self.statuses_updated.emit(
-                [DongleStatus("-", dongle.STATE_ERROR, error_message="libusb not found (brew install libusb)")]
+                [DongleStatus("-", dongle.STATE_ERROR, error_message="libusb introuvable (brew install libusb)")]
             )
             return
         while not self.isInterruptionRequested():
@@ -78,7 +78,7 @@ class DongleMonitor(QThread):
                 if self.current_statuses[location].state == dongle.STATE_READY
             ]
             if not ready_locations:
-                self.sms_send_finished.emit(destination_number, self.OUTCOME_FAILED, "No dongle is ready")
+                self.sms_send_finished.emit(destination_number, self.OUTCOME_FAILED, "Aucun dongle n'est prêt")
                 continue
             connection = self.open_connections[ready_locations[0]]
             try:
@@ -187,6 +187,6 @@ class DongleMonitor(QThread):
             self.switching_started_at[usb_location] = time.time()
         except (usb.core.USBError, RuntimeError, OSError, subprocess.SubprocessError) as switch_error:
             self.current_statuses[usb_location] = DongleStatus(
-                usb_location, dongle.STATE_ERROR, error_message=f"Mode switch failed: {switch_error}"
+                usb_location, dongle.STATE_ERROR, error_message=f"Échec du changement de mode : {switch_error}"
             )
         self.retry_not_before[usb_location] = time.time() + RETRY_AFTER_ERROR_SECONDS

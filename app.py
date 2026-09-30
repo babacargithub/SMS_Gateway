@@ -1,6 +1,6 @@
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLibraryInfo, QLocale, Qt, QTranslator
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 from compose_page import ComposePage
+from contact_store import ContactStore
+from contacts_page import ContactsPage
 from devices_page import DevicesPage
 from dongle_monitor import DongleMonitor
 from sidebar import SIDEBAR_SECTION_NAMES, Sidebar
@@ -37,7 +39,13 @@ class MainWindow(QMainWindow):
 
         self.devices_page = DevicesPage()
         self.compose_page = ComposePage()
-        dedicated_pages = {"Devices": self.devices_page, "Compose": self.compose_page}
+        self.contact_store = ContactStore()
+        self.contacts_page = ContactsPage(self.contact_store)
+        dedicated_pages = {
+            "Appareils": self.devices_page,
+            "Composer": self.compose_page,
+            "Contacts": self.contacts_page,
+        }
         self.content_stack = QStackedWidget()
         for section_name in SIDEBAR_SECTION_NAMES:
             self.content_stack.addWidget(dedicated_pages.get(section_name) or build_placeholder_page(section_name))
@@ -68,6 +76,10 @@ class MainWindow(QMainWindow):
 
 def main():
     application = QApplication(sys.argv)
+    QLocale.setDefault(QLocale(QLocale.French, QLocale.France))
+    qt_french_translator = QTranslator()  # standard buttons: Oui / Non / Annuler...
+    if qt_french_translator.load("qtbase_fr", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+        application.installTranslator(qt_french_translator)
     main_window = MainWindow()
     main_window.show()
     sys.exit(application.exec())
