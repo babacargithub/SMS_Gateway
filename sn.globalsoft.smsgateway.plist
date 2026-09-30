@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>sn.globalsoft.smsgateway</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/macm22023/usbenv/bin/python</string>
+        <string>/Users/macm22023/sms-gateway/gateway.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/macm22023/sms-gateway</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SMS_API_KEY</key>
+        <string>REPLACE-WITH-A-LONG-SECRET</string>
+        <key>SMS_DB</key>
+        <string>/Users/macm22023/sms-gateway/sms_gateway.db</string>
+        <key>SMS_DELAY</key>
+        <string>3</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/macm22023/sms-gateway/gateway.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/macm22023/sms-gateway/gateway.log</string>
+</dict>
+</plist>
