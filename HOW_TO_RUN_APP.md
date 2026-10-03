@@ -18,7 +18,7 @@ SMS Gateway is a macOS desktop app (Python + PySide6) that sends and receives SM
 
 Always call `~/usbenv/bin/python` explicitly: the Conda `(base)` environment is active in the shell and is not the right one.
 Restart the app after any code change (it does not hot-reload). Only one program can use the dongle at a time, so close the
-app before using `huawei_at.py`.
+app before using `scripts/huawei_at.py`.
 
 ### Why iTerm
 
@@ -58,7 +58,7 @@ You only need this on a new machine, or after a reinstall.
 | « Le changement de mode n'a pas abouti » | The app was probably not started from iTerm. Quit it and start it from iTerm. |
 | The dongle stays « Détecté » / nothing happens | Click **Actualiser** on Appareils. Check the cable and port (use a direct port or a powered hub). |
 | Try the switch by hand | `sudo -n /usr/local/libexec/sms-gateway/venv/bin/python /usr/local/libexec/sms-gateway/dongle_mode_switcher.py --switch-now` |
-| Fallback if the helper is broken | `sudo ~/usbenv/bin/python huawei_switch.py` (after each replug), then click **Actualiser**. |
+| Fallback if the helper is broken | `sudo ~/usbenv/bin/python scripts/huawei_switch.py` (after each replug), then click **Actualiser**. |
 | `libusb introuvable` | `brew install libusb` |
 
 ## Uninstall the helper

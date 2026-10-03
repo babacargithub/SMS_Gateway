@@ -7,7 +7,7 @@ app (started from a terminal, i.e. inside the login session) runs this as `sudo 
 allowed by ONE passwordless sudoers rule (see install_switcher.sh). The command takes NO argument, so the rule cannot be
 bent: it switches whatever dongles are in CD-ROM mode right now, and nothing else.
 
-Keep this file self-contained: it is copied to a root-owned folder. Constants must stay in sync with dongle.py."""
+Keep this file self-contained: it is copied to a root-owned folder. Constants must stay in sync with devices/dongle.py."""
 import logging
 import os
 import subprocess

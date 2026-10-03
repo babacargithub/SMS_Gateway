@@ -19,7 +19,7 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
 - **UI language: French only.** Every label, message, tooltip, error shown to the user, and the Qt standard
   buttons (Oui/Non/Annuler, via `qtbase_fr.qm` loaded in `app.py`), must be in French. Code, comments and
   identifiers stay in English. Use French typography: « guillemets », space before `:` `?` `!`, `8 813`
-  (narrow no-break space) and `30/09/2026`. Shared wording helpers live in `french_labels.py`.
+  (narrow no-break space) and `30/09/2026`. Shared wording helpers live in `common/french_labels.py`.
 - **Contacts are organised in named lists** (e.g. "Fidèles clients"). The list name is asked at import; a file can
   also be imported into an existing list (numbers already in that list are skipped). The same number may be in
   several lists (dedupe when a send targets several lists). Deleting a list deletes its contacts (ON DELETE CASCADE);
@@ -53,7 +53,7 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
   `sudo ./mode_switcher/install_switcher.sh` (also removes any old daemon/agent), remove with `uninstall_switcher.sh`.
   **Verified** by running the helper from the terminal session: dongle went 14fe → 151d. Consequence: the app must be
   launched from a terminal (like today); a Finder-launched packaged app would need its own privacy grant. Shows « Détecté » for
-  25 s, then a French error (missing helper / last failure). `huawei_switch.py` remains as a manual fallback.
+  25 s, then a French error (missing helper / last failure). `scripts/huawei_switch.py` remains as a manual fallback.
 - `diskutil eject` can hang (it timed out at 15 s once) — always catch `subprocess.SubprocessError`.
 - The dongle may emit unsolicited lines (`^RSSI`, `^HCSQ`, `^BOOT`…); flush before each command.
   `AT^CURC=0` disables them.
@@ -67,7 +67,7 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
   `…Vous avez 200 Fcfa de credit` → parse the amount with a pattern, never display raw text as the balance.
   The same code sometimes returns `Operation ratee!` (transient failure, status 0) → retry later.
 - `#111#` opens the Expresso offers portal; options 1–5 are **purchases**. Never automate choices there.
-- Operator USSD codes must be configurable per SIM/operator, not hard-coded (`mobile_operators.py` + `operators.json`). The gateway must work with Orange, Expresso and Free SIMs, not only this Expresso one.
+- Operator USSD codes must be configurable per SIM/operator, not hard-coded (`sim/mobile_operators.py` + `operators.json`). The gateway must work with Orange, Expresso and Free SIMs, not only this Expresso one.
 
 ## AT command behaviour observed on this dongle
 
@@ -82,10 +82,10 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
 - Reading SMS: `AT+CPMS="SM","SM","SM"` then `AT+CMGL="ALL"`.
   - Bodies with accents come back as **UCS2 hex** (decode as UTF-16BE).
   - Long SMS arrive as **separate entries** in text mode (same sender + timestamp, text cut mid-word).
-    Reliable reassembly requires PDU mode (`AT+CMGF=0`, `AT+CMGL=4`) and the UDH concat header.
+    Reliable reassembly requires PDU mode (`AT+CMGF=0`, `AT+CMGL=4`) and the UDH concat header — **now what the app does** (see `inbox/sms_pdu.py`).
   - Parts can be missing; indexes are sparse; reading marks messages as read.
   - Strategy: read → store in SQLite → delete from SIM (`AT+CMGD=<i>`). SIM capacity is small.
-  - New-message notification: `AT+CNMI=2,1,0,0,0` → `+CMTI: "SM",<index>`.
+  - New-message notification: `AT+CNMI=2,1,0,0,0` → `+CMTI: "SM",<index>` (used by the app: the monitor thread listens to the AT port between requests; a `+CMTI` seen anywhere, even swallowed as noise before a command or inside a reply, triggers a SIM read).
 - USSD: `AT+CUSD=1,"<GSM 7-bit packed hex>",15`. This dongle expects **packed hex**, not plain text.
   - Examples: `*222#` = `2A994C3602`, `#111#` = `A3582C3602`.
   - `OK` comes immediately; the `+CUSD: <status>,"<hex>",15` reply arrives **asynchronously** seconds later.
@@ -96,76 +96,93 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
 
 ## Code map
 
+Layout: one folder per feature, imported from the project root (`from contacts.contact_store import ContactStore`;
+`app.py` stays at the root and is started from there). Put new code in the folder of its feature; anything used by
+several features goes in `common/`. Features may use `common/`; `outbox/` and `devices/` also use `sim/` and `inbox/`
+parsers, but `common/` never imports a feature.
+`common/` (shared UI + helpers, `app_paths.py`, `database.py`), `contacts/`, `compose/`, `outbox/`, `history/`, `inbox/`,
+`devices/` (USB/AT layer + monitor thread), `sim/` (balance, USSD), `mode_switcher/` (root helper), `scripts/`, `legacy/`.
+
 Desktop app (current):
 - `app.py` — entry point and `MainWindow` (sidebar + stacked pages). Owns the `DongleMonitor` thread.
-- `sidebar.py` — `Sidebar`: colored SVG icons, separators (custom delegate, none after the last item),
+- `common/sidebar.py` — `Sidebar`: colored SVG icons, separators (custom delegate, none after the last item),
   order: Composer, Réception, Contacts, Boîte d'envoi, Historique, Appareils. Pages are matched **by name** in
   `app.py`, so renaming a sidebar entry means updating the key there too.
-- `icons.py` — shared SVG → colored `QIcon` helper (`build_colored_icon`) and icon shapes (edit, trash).
-- `french_labels.py` — French wording helpers (contact count with plural/thousands, dates, SIM status).
-- `contact_import.py` — pure: read `.xlsx`/`.csv` (`;` separator, latin-1 fallback), guess phone/name columns,
+- `common/icons.py` — shared SVG → colored `QIcon` helper (`build_colored_icon`) and icon shapes (edit, trash).
+- `common/french_labels.py` — French wording helpers (contact count with plural/thousands, dates, SIM status).
+- `contacts/contact_import.py` — pure: read `.xlsx`/`.csv` (`;` separator, latin-1 fallback), guess phone/name columns,
   validate + dedupe rows into an `ImportPlan`; other columns are kept as custom fields (future `{variables}`).
-- `contact_store.py` — SQLite (`~/Library/Application Support/SMS Gateway/sms_gateway.db`): `contact_lists` +
+- `contacts/contact_store.py` — SQLite (`~/Library/Application Support/SMS Gateway/sms_gateway.db`): `contact_lists` +
   `contacts(list_id, UNIQUE(list_id, phone_number))`. Short-lived connection per call. Auto-migrates the older
   list-less schema into one list, writing a `.before-lists.bak` copy first.
-- `contacts_page.py` — opens on the lists (name, count, date, rename ✎ / delete 🗑 icon buttons); clicking a list
-  shows its contacts (search, delete selection). `import_contacts_dialog.py` — column mapping, validation report,
+- `contacts/contacts_page.py` — opens on the lists (name, count, date, rename ✎ / delete 🗑 icon buttons); clicking a list
+  shows its contacts (search, delete selection). `contacts/import_contacts_dialog.py` — column mapping, validation report,
   destination list (new name or existing list).
-- `compose_page.py` — **campaign composer**: tick one or more contact lists, write a message with variables, live
+- `compose/compose_page.py` — **campaign composer**: tick one or more contact lists, write a message with variables, live
   preview/validation, **Lancer** queues one personalised message per contact (state `WAITING`) and jumps to the Outbox.
   It does **not** send anything itself. The old single-number direct send was removed from this screen.
-- `message_template.py` — pure: `{variables}`; supported for now: `{nom}`, `{téléphone}`, `{détails}` (case and accents
+- `compose/message_template.py` — pure: `{variables}`; supported for now: `{nom}`, `{téléphone}`, `{détails}` (case and accents
   ignored). `{détails}` = all extra imported columns as `Ville : Dakar, Montant : 5000` (ASCII `, ` separator, because
   text mode turns `·` into `?`). Unknown variables block Lancer. Extra columns 3–10 as variables are planned.
-- `campaign_builder.py` — pure: template + recipients → `CampaignDraft` (a number in several lists is kept once,
+- `compose/campaign_builder.py` — pure: template + recipients → `CampaignDraft` (a number in several lists is kept once,
   counts of empty values, messages over 160 characters or empty). Blocks Lancer on unknown variables / too long / empty.
-- `outbox_store.py` — SQLite `campaigns` + `messages` (recipient, number and final text are **copied**, so deleting a
+- `outbox/outbox_store.py` — SQLite `campaigns` + `messages` (recipient, number and final text are **copied**, so deleting a
   contact or list never changes the queue). States: `WAITING`, `SENDING`, `SENT`, `FAILED`, `UNKNOWN`.
-- `outbox_page.py` — Boîte d'envoi: **Envoyer / Pause (Reprendre) / Arrêter** on top, progress bar,
+- `outbox/outbox_page.py` — Boîte d'envoi: **Envoyer / Pause (Reprendre) / Arrêter** on top, progress bar,
   per-state counters, table (N°, state icon only with tooltip, recipient, number, message, list, date), state filter,
   "Vider les messages en attente" (confirm, default Non). **Multi-select (Cmd/Shift-click, « Tout sélectionner ») + « Supprimer la sélection » / Delete key**
   (confirm, default Non; a `SENDING` message is never deleted). **Envoyer asks for confirmation (default Non) before
   really sending.** Rows update in place while sending; reloads when shown.
-- `message_sender.py` — the seam for delivery: `send(number, text) -> SendResult`. `DongleMessageSender` validates the number,
+- `outbox/message_sender.py` — the seam for delivery: `send(number, text) -> SendResult`. `DongleMessageSender` validates the number,
   hands a `SendRequest` to the monitor thread (which owns the USB) and blocks for the outcome: `+CMGS` → SENT, definite
   refusal → FAILED, anything unclear → UNKNOWN (never retried), no dongle ready → `DONGLE_UNAVAILABLE` (message goes back to
   `WAITING`, worker pauses itself, page shows « En pause : … »). **Real sending is not yet verified with the dongle** —
   the owner must test it (Claude never sends real SMS).
-- `sending_worker.py` — `SendingWorker(QThread)`: claims the oldest `WAITING` message (→ `SENDING`), sends, waits a random 5–10 s, records
+- `outbox/sending_worker.py` — `SendingWorker(QThread)`: claims the oldest `WAITING` message (→ `SENDING`), sends, waits a random pause (speed chosen in the Outbox, `outbox/sending_speed.py`: Rapide 1–1.5 s / Modérée 2–3 s / Prudente 5–10 s, default Prudente, remembered via QSettings, applies live), records
   SENT/FAILED/UNKNOWN. Pause/stop never cut a message in half (the in-flight one finishes first); stop leaves the rest
   `WAITING`. Messages cut off by a crash (`SENDING` at startup) become `UNKNOWN` and are never resent automatically.
-- `devices_page.py` — table of dongles (state, IMEI, operator, signal bars + dBm, SIM, network, USB) and Refresh.
-- `dongle.py` — **device layer, no UI**: USB scan, `DongleConnection` (AT port, timeouts, flush),
+- `devices/devices_page.py` — table of dongles (state, IMEI, operator, signal bars + dBm, SIM, network, USB) and Refresh.
+- `devices/dongle.py` — **device layer, no UI**: USB scan, `DongleConnection` (AT port, timeouts, flush),
   `send_text_message`, live status reading, `SendRejected` / `SendOutcomeUnknown`.
-- `dongle_monitor.py` — `DongleMonitor(QThread)`: scans USB every 3 s, reports CD-ROM dongles (the app asks the root helper to switch them),
+- `devices/dongle_monitor.py` — `DongleMonitor(QThread)`: scans USB every 3 s, reports CD-ROM dongles (the app asks the root helper to switch them),
   health check every 30 s (3 misses → reconnect), Refresh (`request_immediate_rescan`), and a send entry point
   (`submit_text_message` → a `SendRequest` the caller waits on) used by `DongleMessageSender`; requests still queued when the monitor closes are refused.
   The scan loop catches and logs every exception so the thread can never die silently.
-- `sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
-- `received_sms_parser.py` — pure: parses `AT+CMGL="ALL"` (text mode + `AT+CSDH=1` for the DCS) into `ReceivedSms`; UCS2 bodies decoded.
-- `inbox_store.py` — SQLite `received_messages` (unique on sender+time+text, `is_read`); sender name looked up from contacts.
-- `inbox_page.py` — Réception: table (unread in bold), preview pane, selecting marks read, mark-all-read, delete (confirm). Sidebar shows `Réception (n)`.
-- `DongleMonitor._drain_sim_inboxes` — every scan cycle: read SIM → store in DB → only then `AT+CMGD` each slot; emits `inbox_messages_received` → `notification_sound.py` (afplay Glass.aiff). **Not yet verified with the real dongle.** Long SMS still arrive as separate parts (text mode; PDU reassembly still to do).
-- `history_page.py` — Historique = the **sent** messages (`SENT`, same `messages` table, newest first, « Envoyé le » = `updated_at`), search,
-  multi-select delete. The Outbox shows only `OUTBOX_STATES` (WAITING, SENDING, FAILED, UNKNOWN): a message leaves it live the moment it is `SENT`.
+- `common/sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
+- `inbox/sms_pdu.py` — pure: decodes one SMS-DELIVER PDU (GSM 7-bit / 8-bit / UCS2, numeric and alphanumeric senders like « Expresso », operator timestamp,
+  concatenation header = « part n of N »). `inbox/received_sms_parser.py` — pure: `AT+CMGL=4` reply → `SmsPart`s (an undecodable entry is logged and left on the SIM).
+  `inbox/sms_assembler.py` — pure: parts → complete messages. A long SMS is stored **only when every part is on the SIM** (parts stay there meanwhile);
+  after 10 minutes an incomplete one is stored with a « […] » marker where the part is missing. Tests: `~/usbenv/bin/python -m unittest discover tests`.
+  Messages stored before this change (text mode) may still be cut into fragments in the wrong order: they cannot be repaired, delete them.
+- `inbox/inbox_store.py` — SQLite `received_messages` (unique on sender+time+text, `is_read`); sender name looked up from contacts.
+- `inbox/inbox_page.py` — Réception: table (unread in bold), preview pane, selecting marks read, mark-all-read, delete (confirm). Sidebar shows `Réception (n)`.
+- `DongleMonitor._drain_sim_inboxes` — when the dongle announces a new SMS (`+CMTI`, enabled with `AT+CNMI=2,1,0,0,0` at connect), at startup and on every new connection, plus a 20 s safety timer (3 s polling if the dongle refuses `AT+CNMI`): read SIM in PDU mode → assemble long messages → store in DB → only then `AT+CMGD` every slot of each stored message; emits `inbox_messages_received` → `inbox/notification_sound.py` (afplay Glass.aiff). **Not yet verified with the real dongle.** Long SMS are reassembled from their parts (PDU mode).
+- `history/history_page.py` — Historique = the **sent** messages (`SENT`, same `messages` table, newest first, « Envoyé le » = `updated_at`), search,
+  multi-select delete. The Outbox shows the current run: `SENT` messages stay there (success icon, `in_outbox=1`) to show progress and move to the Historique (`archive_sent_messages`) when the run ends, is stopped, the queue is cleared, or at app start. Envoyer/Reprendre first requeues `FAILED` messages (`requeue_failed_messages`; `UNKNOWN` never). While sending, the list auto-scrolls to the active message unless the user touched it in the last 10 s. SENDING icon = hourglass.
 
-- `sim_page.py` — **SIM** screen (last sidebar item): « Vérifier le solde » → one card per ready dongle with the balance (`1 250 FCFA`), or a French error.
+- `sim/sim_page.py` — **SIM** screen (last sidebar item): « Vérifier le solde » → one card per ready dongle with the balance (`1 250 FCFA`), or a French error.
   Flow: `DongleMonitor.request_balance_check` → `_read_balance` (USSD via `DongleConnection.run_ussd_code`, up to 3 tries on « Operation ratee! ») → signal `balance_check_finished`.
   Manual button only, never automatic. **Not yet verified with the real dongle.**
-- `mobile_operators.py` — pure, **multi-operator** (Expresso, Orange, Free): `MobileOperator` profiles (network codes, name aliases, balance USSD code,
-  reply regexes). The SIM is recognised by its numeric MCC+MNC (`dongle.py` reads it with `AT+COPS=3,2` → `DongleStatus.operator_network_code`;
+  Below the balance: `sim/ussd_dialer.py` — **interactive USSD dialer**. Type a code (`*222#`, `#111#`), read the reply in a transcript,
+  answer a menu (the button becomes « Répondre »), « Fermer la session ». Only digits and `* # +` are accepted; every choice is typed by
+  the person (the app never picks a menu option). Flow: `DongleMonitor.submit_ussd_request` → `DongleConnection.send_ussd_request`
+  (`UssdReply.status` 1 = menu open) → `ussd_exchange_finished`; the answer goes back to the dongle holding the session; a new code closes
+  the old session first; the balance check closes it too. Types in `sim/ussd_session.py`. **Menu answers still unverified** (see the
+  « Unresolved » note in the USSD facts: an answer once got « Entrée non valide »).
+- `sim/mobile_operators.py` — pure, **multi-operator** (Expresso, Orange, Free): `MobileOperator` profiles (network codes, name aliases, balance USSD code,
+  reply regexes). The SIM is recognised by its numeric MCC+MNC (`devices/dongle.py` reads it with `AT+COPS=3,2` → `DongleStatus.operator_network_code`;
   Orange 60801, Free 60802, Expresso 60803), then by name alias. Owner overrides live in
   `~/Library/Application Support/SMS Gateway/operators.json`, e.g. `{"orange": {"balance_ussd_code": "#123#", "balance_reply_patterns": ["..."]}}`.
-  **Only Expresso `*222#` is verified.** Orange `#123#` and Free `*222#` are unverified guesses (flagged on the card); the card shows the raw reply when it can't be parsed.
-  `sim_balance.py` = result type + transient-failure rule; `ussd_codec.py` = GSM 7-bit pack/unpack.
+  **Verified: Expresso `*222#` and Orange `#123#`** (reply « Credit global: 162881F,compteur recharge… », parsed by `GLOBAL_CREDIT_PATTERN`). Free `*222#` is an unverified guess (flagged on the card); the card shows the raw reply when it can't be parsed.
+  `sim/sim_balance.py` = result type + transient-failure rule; `sim/ussd_codec.py` = GSM 7-bit pack/unpack.
 
 Scripts (still useful, run outside the app):
-- `huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).
-- `huawei_at.py` — interactive AT shell, plus `send <number> <text>`.
+- `scripts/huawei_switch.py` — one-shot CD-ROM → modem switch (needs sudo).
+- `scripts/huawei_at.py` — interactive AT shell, plus `send <number> <text>`.
 
 Legacy (superseded by the desktop design, kept only as reference — mine it for queue/retry ideas, then delete):
-- `gateway.py` — old FastAPI service with SQLite queue and worker. Never run on this Mac.
-- `sn.globalsoft.smsgateway.plist` — old launchd daemon definition. Not used.
+- `legacy/gateway.py` — old FastAPI service with SQLite queue and worker. Never run on this Mac.
+- `legacy/sn.globalsoft.smsgateway.plist` — old launchd daemon definition. Not used.
 
 ## Environment
 
@@ -175,7 +192,7 @@ Legacy (superseded by the desktop design, kept only as reference — mine it for
 - Homebrew libusb at `/opt/homebrew/lib`.
 - Preview UI without a display: `QT_QPA_PLATFORM=offscreen`, `widget.grab().save(png)`, then view the PNG.
 - zsh aborts a whole command when one glob matches nothing (`ls /dev/cu.* /dev/tty.usb*`).
-- Only one process can own the dongle: close the app before using `huawei_at.py`.
+- Only one process can own the dongle: close the app before using `scripts/huawei_at.py`.
 
 ## Reliability requirements (dongle plugged in for days)
 
@@ -192,7 +209,7 @@ Legacy (superseded by the desktop design, kept only as reference — mine it for
 - Identify dongles by IMEI (`AT+CGSN`), not by USB location. The IMEI is read but the monitor still keys
   connections by USB location — switch to IMEI when multi-dongle support arrives.
 - Structured logs with rotation. Not yet (only `logging.exception` in the scan loop).
-- Mac must not sleep during a campaign: hold a power assertion (`caffeinate` / IOKit) while sending;
+- Mac must not sleep during a campaign: ✅ `common/keep_awake.py` holds an IOKit `PreventUserIdleSystemSleep` assertion for the whole `SendingWorker` run (also exempts the app from App Nap; screen lock is fine, closed lid / manual Sleep are not covered);
   `sudo pmset autorestart 1` is no longer needed because the app is not a daemon.
 - Use direct USB ports or a powered hub (dongles draw up to 500 mA).
 - Quitting mid-campaign must warn, then pause and persist the queue.
@@ -208,7 +225,7 @@ Legacy (superseded by the desktop design, kept only as reference — mine it for
    report, rename/delete. Still to do: blacklist, edit a single contact, virtual table for 10k+ contacts.
 6. Campaigns extras: pause/resume/stop per campaign, sleep prevention, more variables (columns 3–10), multipart SMS.
 7. Devices extras: credit via USSD `*222#` (needs GSM 7-bit packed hex unpacker), test-SMS button.
-8. Inbox: CNMI notifications, UCS2 decode, PDU-mode multipart reassembly, auto-blacklist on "STOP".
+8. Inbox: ✅ UCS2 decode, ✅ PDU-mode multipart reassembly (**not yet verified with the real dongle**). ✅ CNMI notifications (**not yet verified with the real dongle**). Still to do: auto-blacklist on "STOP".
 9. Extras: UCS2 + multipart sending, delivery reports (`AT+CSMP`, `AT+CNMI`), scheduling, multi-dongle
    load balancing, low-credit alerts, per-SIM hourly/daily caps, optional HTTP API for the Laravel apps.
 
