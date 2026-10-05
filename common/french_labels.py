@@ -19,6 +19,10 @@ def format_message_count(message_count):
     return f"{format_number(message_count)} message" if message_count <= 1 else f"{format_number(message_count)} messages"
 
 
+def format_sms_count(sms_count):
+    return f"{format_number(sms_count)} SMS"
+
+
 def format_french_date(iso_date_text):
     """'2026-09-30' -> '30/09/2026'."""
     year, month, day = iso_date_text.split("-")

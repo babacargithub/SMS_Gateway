@@ -1,4 +1,4 @@
-from PySide6.QtCore import QAbstractTableModel, QSize, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -14,15 +14,24 @@ from PySide6.QtWidgets import (
 
 from common.dialogs import ask_yes_no_defaulting_to_no
 from common.french_labels import format_french_datetime, format_message_count, format_number
-from common.icons import CHECK_CIRCLE_ICON_SHAPES, TRASH_ICON_SHAPES, build_colored_icon
+from common.icons import CHECK_CIRCLE_ICON_SHAPES, REPLY_ICON_SHAPES, TRASH_ICON_SHAPES, build_colored_icon
+from inbox.reply_dialog import ReplyDialog
 from inbox.inbox_store import InboxStore
 from common.sms_text import normalize_senegal_number
 from common.table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS
 
-COLUMN_TITLES = [POSITION_COLUMN_TITLE, "Expéditeur", "Message", "Reçu le"]
-POSITION_COLUMN, SENDER_COLUMN, MESSAGE_COLUMN, RECEIVED_AT_COLUMN = range(4)
+COLUMN_TITLES = [POSITION_COLUMN_TITLE, "Expéditeur", "Message", "", "Reçu le"]
+POSITION_COLUMN, SENDER_COLUMN, MESSAGE_COLUMN, REPLY_COLUMN, RECEIVED_AT_COLUMN = range(5)
+REPLY_COLUMN_WIDTH_PIXELS = 44
+REPLY_ICON_SIZE_PIXELS = 16
+FEEDBACK_DISPLAY_MILLISECONDS = 6000
 CONTROL_ICON_SIZE_PIXELS = 16
 PREVIEW_HEIGHT_PIXELS = 110
+
+
+def reply_number_of(inbox_message):
+    """The number a reply can be sent to ('+221' + 9 digits), or None for a sender such as « Expresso » or a short code."""
+    return normalize_senegal_number(inbox_message.sender_number)
 
 
 def format_sender(inbox_message):
@@ -40,6 +49,7 @@ class InboxTableModel(QAbstractTableModel):
         super().__init__()
         self.inbox_messages = []
         self.row_by_message_id = {}
+        self.reply_icon = build_colored_icon(REPLY_ICON_SHAPES, "#3B82F6")
 
     def set_messages(self, inbox_messages):
         self.beginResetModel()
@@ -73,8 +83,16 @@ class InboxTableModel(QAbstractTableModel):
                 format_number(index.row() + 1),
                 format_sender(inbox_message),
                 inbox_message.message_text.replace("\n", " "),
+                "",  # the reply button is drawn as an icon
                 format_french_datetime(inbox_message.received_at),
             )[column]
+        if column == REPLY_COLUMN:
+            if role == Qt.DecorationRole and reply_number_of(inbox_message):
+                return self.reply_icon
+            if role == Qt.ToolTipRole:
+                return "Répondre" if reply_number_of(inbox_message) else "Impossible de répondre à cet expéditeur"
+            if role == Qt.TextAlignmentRole:
+                return int(Qt.AlignCenter)
         if role == Qt.FontRole and not inbox_message.is_read:
             bold_font = QFont()
             bold_font.setBold(True)
@@ -90,6 +108,7 @@ class InboxPage(QWidget):
     """Réception: every SMS received by the dongles (already moved off the SIM into the database)."""
 
     unread_count_changed = Signal(int)
+    reply_submitted = Signal(str, str, str)  # number to answer, recipient name (may be empty), reply text
 
     def __init__(self, inbox_store: InboxStore):
         super().__init__()
@@ -103,7 +122,10 @@ class InboxPage(QWidget):
         for control_button in (self.mark_all_read_button, self.delete_button):
             control_button.setIconSize(QSize(CONTROL_ICON_SIZE_PIXELS, CONTROL_ICON_SIZE_PIXELS))
         toolbar_layout = QHBoxLayout()
+        self.feedback_label = QLabel("")
+        self.feedback_label.setStyleSheet("color: #1e8449;")
         toolbar_layout.addWidget(self.summary_label)
+        toolbar_layout.addWidget(self.feedback_label)
         toolbar_layout.addStretch()
         toolbar_layout.addWidget(self.mark_all_read_button)
         toolbar_layout.addWidget(self.delete_button)
@@ -120,7 +142,11 @@ class InboxPage(QWidget):
         header.setSectionResizeMode(POSITION_COLUMN, QHeaderView.Fixed)
         header.setSectionResizeMode(SENDER_COLUMN, QHeaderView.Interactive)
         header.setSectionResizeMode(MESSAGE_COLUMN, QHeaderView.Stretch)
+        header.setSectionResizeMode(REPLY_COLUMN, QHeaderView.Fixed)
         header.setSectionResizeMode(RECEIVED_AT_COLUMN, QHeaderView.ResizeToContents)
+        self.messages_table.setIconSize(QSize(REPLY_ICON_SIZE_PIXELS, REPLY_ICON_SIZE_PIXELS))
+        self.messages_table.setColumnWidth(REPLY_COLUMN, REPLY_COLUMN_WIDTH_PIXELS)
+        self.messages_table.setMouseTracking(True)
         self.messages_table.setColumnWidth(POSITION_COLUMN, POSITION_COLUMN_WIDTH_PIXELS)
         self.messages_table.setColumnWidth(SENDER_COLUMN, 220)
 
@@ -139,6 +165,8 @@ class InboxPage(QWidget):
         page_layout.addWidget(self.empty_label)
         page_layout.addWidget(self.message_preview)
 
+        self.messages_table.clicked.connect(self.handle_cell_click)
+        self.messages_table.entered.connect(self.show_hand_cursor_over_reply_icon)
         self.messages_table.selectionModel().selectionChanged.connect(self.show_selected_message)
         self.mark_all_read_button.clicked.connect(self.mark_everything_as_read)
         self.delete_button.clicked.connect(self.delete_selected_messages)
@@ -165,6 +193,25 @@ class InboxPage(QWidget):
         self.mark_all_read_button.setEnabled(unread_count > 0)
         self.delete_button.setEnabled(total_count > 0)
         self.unread_count_changed.emit(unread_count)
+
+    def show_hand_cursor_over_reply_icon(self, hovered_index):
+        can_reply = hovered_index.column() == REPLY_COLUMN and reply_number_of(self.table_model.message_at_row(hovered_index.row()))
+        self.messages_table.viewport().setCursor(Qt.PointingHandCursor if can_reply else Qt.ArrowCursor)
+
+    def handle_cell_click(self, clicked_index):
+        if clicked_index.column() == REPLY_COLUMN:
+            self.reply_to_message(self.table_model.message_at_row(clicked_index.row()))
+
+    def reply_to_message(self, inbox_message):
+        number_to_answer = reply_number_of(inbox_message)
+        if number_to_answer is None:
+            return  # an alphanumeric sender (« Expresso ») or short code cannot receive an SMS
+        reply_dialog = ReplyDialog(self, format_sender(inbox_message), inbox_message.message_text, inbox_message.received_at)
+        if reply_dialog.exec() != ReplyDialog.Accepted:
+            return
+        self.reply_submitted.emit(number_to_answer, inbox_message.sender_name, reply_dialog.reply_text())
+        self.feedback_label.setText(f"Réponse à {inbox_message.sender_name or number_to_answer} mise en file prioritaire.")
+        QTimer.singleShot(FEEDBACK_DISPLAY_MILLISECONDS, lambda: self.feedback_label.setText(""))
 
     def selected_rows(self):
         return sorted({index.row() for index in self.messages_table.selectionModel().selectedRows()})

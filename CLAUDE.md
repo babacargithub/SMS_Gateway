@@ -118,16 +118,23 @@ Desktop app (current):
 - `contacts/contacts_page.py` — opens on the lists (name, count, date, rename ✎ / delete 🗑 icon buttons); clicking a list
   shows its contacts (search, delete selection). `contacts/import_contacts_dialog.py` — column mapping, validation report,
   destination list (new name or existing list).
-- `compose/compose_page.py` — **campaign composer**: tick one or more contact lists, write a message with variables, live
-  preview/validation, **Lancer** queues one personalised message per contact (state `WAITING`) and jumps to the Outbox.
-  It does **not** send anything itself. The old single-number direct send was removed from this screen.
-- `compose/message_template.py` — pure: `{variables}`; supported for now: `{nom}`, `{téléphone}`, `{détails}` (case and accents
+- `compose/compose_page.py` — **campaign composer**: choose recipients with two radio buttons — « Listes de contacts » (tick one or more) or « Un seul numéro » (typed number + optional name, via `compose/typed_recipient.py`; queued as a one-message campaign with list name « Numéro saisi ») — write a message with variables, live
+  preview/validation (encoding, SMS count, cost per part), **Lancer** queues one personalised message per contact (state `WAITING`) and jumps to the Outbox.
+  It does **not** send anything itself (both modes queue to the Outbox, which asks for confirmation before really sending). **The draft is kept between launches** (QSettings group `compose_draft`: message, recipient mode, typed number/name, ticked list ids; saved on every change and when the window closes, emptied once Lancer queues it). Tests that build a `ComposePage` must redirect `ComposePage.draft_settings` and the 7-bit preference functions (see `tests/test_compose_recipients_and_draft.py`) so they never write the owner's real preferences.
+- `common/message_template.py` — pure: `{variables}`; supported for now: `{nom}`, `{téléphone}`, `{détails}` (case and accents
   ignored). `{détails}` = all extra imported columns as `Ville : Dakar, Montant : 5000` (ASCII `, ` separator, because
   text mode turns `·` into `?`). Unknown variables block Lancer. Extra columns 3–10 as variables are planned.
 - `compose/campaign_builder.py` — pure: template + recipients → `CampaignDraft` (a number in several lists is kept once,
   counts of empty values, messages over 160 characters or empty). Blocks Lancer on unknown variables / too long / empty.
 - `outbox/outbox_store.py` — SQLite `campaigns` + `messages` (recipient, number and final text are **copied**, so deleting a
   contact or list never changes the queue). States: `WAITING`, `SENDING`, `SENT`, `FAILED`, `UNKNOWN`.
+- **Batches (lots) and correcting waiting messages:** every campaign is a batch. `campaigns` keeps `message_template`, `variables_used` (JSON list), `simplify_to_7_bit`, `is_reply`, `edited_at`; every
+  `messages` row keeps `variable_values` (JSON of ALL variables of that recipient: `nom`, `telephone`, `details` — not only the ones used, so a later template may use others). `common/message_template.py`
+  (moved from `compose/`) has `render_final_message_text`, the one place that builds a final SMS text (Composer and batch editor both use it). `outbox/batch_editing.py` (pure `plan_batch_edit`) is used by the dialog preview AND by
+  `OutboxStore.update_batch_template` (one `BEGIN IMMEDIATE` transaction, all or nothing): it re-renders every **WAITING or FAILED** message of the batch (FAILED ones are resent by the next run); SENT, SENDING and UNKNOWN never change.
+  Rejected (`BatchEditRejected`, French reason): empty text, unknown variable, a message that would be empty or over 10 SMS. Messages queued before this feature have `variable_values='{}'` and cannot be rebuilt (reported, left as they are).
+  `outbox/batches_panel.py` = table at the TOP of the Boîte d'envoi (batches that still have messages in the Outbox, replies excluded) with a « Gérer » button → `outbox/batch_manager_dialog.py` (edit the message with live preview, variable buttons,
+  7-bit option, « Supprimer les messages en attente » = WAITING+FAILED of that batch, confirm default Non). Tests: `tests/test_batch_editing.py`.
 - `outbox/outbox_page.py` — Boîte d'envoi: **Envoyer / Pause (Reprendre) / Arrêter** on top, progress bar,
   per-state counters, table (N°, state icon only with tooltip, recipient, number, message, list, date), state filter,
   "Vider les messages en attente" (confirm, default Non). **Multi-select (Cmd/Shift-click, « Tout sélectionner ») + « Supprimer la sélection » / Delete key**
@@ -148,12 +155,25 @@ Desktop app (current):
   health check every 30 s (3 misses → reconnect), Refresh (`request_immediate_rescan`), and a send entry point
   (`submit_text_message` → a `SendRequest` the caller waits on) used by `DongleMessageSender`; requests still queued when the monitor closes are refused.
   The scan loop catches and logs every exception so the thread can never die silently.
-- `common/sms_text.py` — pure helpers: `normalize_senegal_number`, `sanitize_for_text_mode` (ASCII only).
+- `common/sms_text.py` — pure helper: `normalize_senegal_number`.
+- `common/sms_encoding.py` — **accents + long messages** (pure): `plan_sms(text)` picks GSM 7-bit (160 chars/SMS, 153 per part) or Unicode/UCS-2 (70/67) and cuts the text into parts
+  (never inside an extension char like « € » or an emoji); `build_submit_pdus` makes the SMS-SUBMIT PDUs (concatenation header, 8-bit reference); `simplify_for_gsm7` (ê→e, ç→c, « »→\") is the
+  « Rester en 7 bits » checkbox in the Composer and the reply window (**off by default**: text goes out exactly as typed, like SMS Caster, which billed 1 SMS ≤160 and 2 SMS ≤306 with é è à ù; remembered in QSettings via `common/sms_preferences.py`). **Gotcha:** é è à ù ö ñ ü are 7-bit but ç ê â î ô û ë ï œ « » ’ and CAPITAL À È are not: one of them makes the
+  whole message Unicode (70 chars). Max `MAX_PARTS_PER_MESSAGE = 10` SMS per message (cost guard; refused above). Every part is billed as one SMS.
+  `DongleConnection.send_text_message`: a plain printable-ASCII single SMS keeps the **text-mode path verified on this dongle**; everything else goes in **PDU mode** (`AT+CMGF=0`, `AT+CMGS=<tpdu length>`,
+  PDU hex + Ctrl+Z, one part after the other with a 1 s pause). If a LATER part fails after earlier ones went out the result is UNKNOWN (never FAILED, never retried). **PDU sending is not yet verified with
+  the real dongle/operators** (tests: `tests/test_sms_encoding.py` round-trips every PDU through the inbox decoder; `tests/test_long_and_accented_sending.py` scripts the AT dialogue).
 - `inbox/sms_pdu.py` — pure: decodes one SMS-DELIVER PDU (GSM 7-bit / 8-bit / UCS2, numeric and alphanumeric senders like « Expresso », operator timestamp,
   concatenation header = « part n of N »). `inbox/received_sms_parser.py` — pure: `AT+CMGL=4` reply → `SmsPart`s (an undecodable entry is logged and left on the SIM).
   `inbox/sms_assembler.py` — pure: parts → complete messages. A long SMS is stored **only when every part is on the SIM** (parts stay there meanwhile);
   after 10 minutes an incomplete one is stored with a « […] » marker where the part is missing. Tests: `~/usbenv/bin/python -m unittest discover tests`.
   Messages stored before this change (text mode) may still be cut into fragments in the wrong order: they cannot be repaired, delete them.
+- **Replies (Inbox → priority queue):** Réception has a reply icon column (blue arrow, only for senders that are real `+221` numbers, not « Expresso » or short codes). Click → `inbox/reply_dialog.py`
+  (quoted original, 160-char counter, accents simplified) → `InboxPage.reply_submitted` → `OutboxPage.queue_reply` (wired in `app.py`). `OutboxStore.queue_reply` stores a message with `priority=1`
+  (own one-message campaign, list « Réponse »); claims and the Outbox list order by `priority DESC, id`. `SendingWorker`: once the message in flight is done, every waiting reply goes out
+  one after the other without the campaign pause (a reply cuts the pause short); `replies_only=True` workers (`OutboxPage.reply_worker`) deliver replies while the campaign is idle, paused or
+  stopping, end when none is left, and on « no dongle » end and leave the reply first in line (`reply_delivery_postponed` → warning in `app.py`). Delivered replies reach the Historique like other SENT messages.
+  Tests: `tests/test_reply_priority_queue.py`. **Not yet verified with the real dongle.**
 - `inbox/inbox_store.py` — SQLite `received_messages` (unique on sender+time+text, `is_read`); sender name looked up from contacts.
 - `inbox/inbox_page.py` — Réception: table (unread in bold), preview pane, selecting marks read, mark-all-read, delete (confirm). Sidebar shows `Réception (n)`.
 - `DongleMonitor._drain_sim_inboxes` — when the dongle announces a new SMS (`+CMTI`, enabled with `AT+CNMI=2,1,0,0,0` at connect), at startup and on every new connection, plus a 20 s safety timer (3 s polling if the dongle refuses `AT+CNMI`): read SIM in PDU mode → assemble long messages → store in DB → only then `AT+CMGD` every slot of each stored message; emits `inbox_messages_received` → `inbox/notification_sound.py` (afplay Glass.aiff). **Not yet verified with the real dongle.** Long SMS are reassembled from their parts (PDU mode).

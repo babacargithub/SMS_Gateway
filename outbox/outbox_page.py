@@ -1,4 +1,4 @@
-from PySide6.QtCore import QAbstractTableModel, QElapsedTimer, QEvent, QModelIndex, QSettings, QSize, Qt
+from PySide6.QtCore import QAbstractTableModel, QElapsedTimer, QEvent, QModelIndex, QSettings, QSize, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 from outbox import outbox_store
 from common.dialogs import ask_yes_no_defaulting_to_no
 from common.french_labels import MESSAGE_STATE_LABELS, format_french_datetime, format_message_count, format_number
+from outbox.batch_manager_dialog import BatchManagerDialog
+from outbox.batches_panel import BatchesPanel
 from outbox.sending_speed import DEFAULT_SENDING_SPEED_KEY, SENDING_SPEEDS, find_sending_speed
 from outbox.sending_worker import SendingWorker
 from common.table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS
@@ -137,18 +139,23 @@ class OutboxTableModel(QAbstractTableModel):
 class OutboxPage(QWidget):
     """The queue: every message of every launched campaign, with its state."""
 
+    reply_delivery_postponed = Signal(str)  # why a reply could not be sent now (it stays first in the queue)
+
     def __init__(self, outbox_store_instance, message_sender):
         super().__init__()
         self.outbox_store = outbox_store_instance
         self.message_sender = message_sender
         self.state_icons = build_state_icons()
         self.sending_worker = None
+        self.reply_worker = None  # sends just the replies while the campaign is idle or paused
         self.run_state = IDLE
         self.waiting_count = 0
         self.failed_count = 0
         self.last_user_action_timer = QElapsedTimer()  # restarted by any manual scroll / click / key on the list
         self.paused_reason = ""  # why the worker paused itself (e.g. no dongle), shown instead of « En pause »
 
+        self.batches_panel = BatchesPanel()
+        self.batches_panel.manage_requested.connect(self.open_batch_manager)
         self.send_button = self.build_control_button(PLAY_ICON_SHAPES, "#10B981", "Envoyer")
         self.pause_button = self.build_control_button(PAUSE_ICON_SHAPES, "#F59E0B", "Pause")
         self.stop_button = self.build_control_button(STOP_ICON_SHAPES, "#EF4444", "Arrêter")
@@ -232,6 +239,7 @@ class OutboxPage(QWidget):
         self.empty_label.setStyleSheet("font-size: 16px; color: gray;")
 
         page_layout = QVBoxLayout(self)
+        page_layout.addWidget(self.batches_panel)
         page_layout.addLayout(controls_layout)
         page_layout.addLayout(summary_layout)
         page_layout.addLayout(toolbar_layout)
@@ -263,6 +271,7 @@ class OutboxPage(QWidget):
             count_label.setText(f"{MESSAGE_STATE_LABELS[state]} : {format_number(state_counts[state])}")
         self.waiting_count = state_counts[outbox_store.WAITING]
         self.failed_count = state_counts[outbox_store.FAILED]
+        self.batches_panel.show_batches(self.outbox_store.list_batches())
 
         self.table_model.shown_states = self.states_to_show()
         self.table_model.set_messages(self.outbox_store.list_messages(self.states_to_show()))
@@ -366,6 +375,49 @@ class OutboxPage(QWidget):
             self.sending_worker.start()
         self.apply_run_state()
 
+    # ---- replies (priority queue) ---------------------------------------------------------------
+
+    def queue_reply(self, phone_number, recipient_name, reply_text):
+        """A reply typed in the Inbox: queued with priority and sent as soon as the message in flight is done."""
+        self.outbox_store.queue_reply(phone_number, recipient_name, reply_text)
+        self.reload()
+        self.deliver_waiting_replies()
+
+    def deliver_waiting_replies(self):
+        """Make sure something is going to send the waiting replies."""
+        if self.outbox_store.count_waiting_replies() == 0:
+            return
+        if self.run_state == RUNNING:
+            self.sending_worker.notify_reply_queued()  # the campaign worker takes it right after the current message
+        elif self.run_state == STOPPING:
+            return  # finish_run calls this again once the campaign worker has ended
+        elif self.reply_worker is None:
+            # campaign idle, or paused by the user / for lack of a dongle: replies do not wait for it
+            self.reply_worker = SendingWorker(self.outbox_store, self.message_sender, replies_only=True)
+            self.reply_worker.message_state_changed.connect(self.show_reply_state_change)
+            self.reply_worker.dongle_unavailable.connect(self.postpone_reply_delivery)
+            self.reply_worker.run_finished.connect(self.finish_reply_run)
+            self.reply_worker.start()
+
+    def show_reply_state_change(self, message_id, new_state, error_detail):
+        self.show_message_state_change(message_id, new_state, error_detail)
+        self.refresh_state_counters()  # a replies-only worker reports no progress, so the counters follow its messages
+
+    def postpone_reply_delivery(self, reason):
+        self.reply_delivery_postponed.emit(reason or "aucun dongle prêt")
+
+    def finish_reply_run(self, finished_everything):
+        self.reply_worker.wait()
+        self.reply_worker = None
+        if self.run_state == IDLE:
+            self.outbox_store.archive_sent_messages()  # no campaign run to show them in: delivered replies go to the Historique
+            self.reload()
+        else:
+            self.refresh_state_counters()
+            self.apply_run_state()
+        if finished_everything:
+            self.deliver_waiting_replies()  # a reply may have been queued just as the worker was ending
+
     def show_message_state_change(self, message_id, new_state, error_detail):
         self.table_model.update_message_state(message_id, new_state, error_detail)
         if new_state == outbox_store.SENDING:
@@ -448,6 +500,13 @@ class OutboxPage(QWidget):
             count_label.setText(f"{MESSAGE_STATE_LABELS[state]} : {format_number(state_counts[state])}")
         self.waiting_count = state_counts[outbox_store.WAITING]
         self.failed_count = state_counts[outbox_store.FAILED]
+        self.batches_panel.show_batches(self.outbox_store.list_batches())
+
+    def open_batch_manager(self, campaign_id):
+        batch_manager = BatchManagerDialog(self, self.outbox_store, campaign_id)
+        batch_manager.exec()
+        if batch_manager.changes_made:
+            self.reload()  # corrected texts / removed messages
 
     def finish_run(self, finished_everything):
         self.sending_worker.wait()
@@ -456,9 +515,11 @@ class OutboxPage(QWidget):
         self.outbox_store.archive_sent_messages()  # the run is over: delivered messages move to the Historique
         self.reload()
         self.status_label.setText("Terminé" if finished_everything else "Arrêté")
+        self.deliver_waiting_replies()
 
     def shutdown(self):
         """Called when the application closes: stop cleanly after the message being sent."""
-        if self.sending_worker is not None:
-            self.sending_worker.stop()
-            self.sending_worker.wait(5000)
+        for worker in (self.sending_worker, self.reply_worker):
+            if worker is not None:
+                worker.stop()
+                worker.wait(5000)

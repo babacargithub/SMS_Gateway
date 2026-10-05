@@ -9,11 +9,12 @@ from devices.dongle_monitor import (
     OUTCOME_UNKNOWN,
     DongleMonitor,
 )
+from common.sms_encoding import MAX_PARTS_PER_MESSAGE, plan_sms
 from common.sms_text import normalize_senegal_number
 
 DONGLE_UNAVAILABLE = "DONGLE_UNAVAILABLE"  # not a message state: the message was never handed to a dongle
 SEND_REQUEST_START_TIMEOUT_SECONDS = 60     # the monitor may be busy scanning or initializing another dongle
-SEND_REQUEST_RESULT_TIMEOUT_SECONDS = 60    # the device layer itself waits up to 30 s for the network
+SEND_REQUEST_RESULT_TIMEOUT_SECONDS = 60    # per SMS part: the device layer itself waits up to 30 s for the network
 
 
 @dataclass
@@ -35,12 +36,15 @@ class DongleMessageSender:
         normalized_number = normalize_senegal_number(phone_number)
         if normalized_number is None:
             return SendResult(outbox_store.FAILED, f"Numéro invalide : {phone_number}")
+        sms_plan = plan_sms(message_text)
+        if sms_plan.is_too_long:
+            return SendResult(outbox_store.FAILED, f"Message trop long : plus de {MAX_PARTS_PER_MESSAGE} SMS")
         send_request = self.dongle_monitor.submit_text_message(normalized_number, message_text)
         if not send_request.finished.wait(SEND_REQUEST_START_TIMEOUT_SECONDS):
             if send_request.cancel_if_not_started():
                 return SendResult(DONGLE_UNAVAILABLE, "Le gestionnaire de dongles ne répond pas")
             # the send began meanwhile: wait for its real outcome
-            if not send_request.finished.wait(SEND_REQUEST_RESULT_TIMEOUT_SECONDS):
+            if not send_request.finished.wait(SEND_REQUEST_RESULT_TIMEOUT_SECONDS * sms_plan.part_count):
                 return SendResult(outbox_store.UNKNOWN, "Aucune réponse du dongle : vérifiez auprès du destinataire")
         outcome_to_result = {
             OUTCOME_SENT: SendResult(outbox_store.SENT),

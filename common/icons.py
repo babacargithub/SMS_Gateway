@@ -51,3 +51,4 @@ HELP_CIRCLE_ICON_SHAPES = (
     '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>'
     '<line x1="12" y1="17" x2="12.01" y2="17"/>'
 )
+REPLY_ICON_SHAPES = '<polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>'

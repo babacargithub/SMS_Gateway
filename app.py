@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -85,6 +86,8 @@ class MainWindow(QMainWindow):
         self.sim_page.session_close_requested.connect(self.dongle_monitor.submit_ussd_session_close)
         self.dongle_monitor.ussd_exchange_finished.connect(self.sim_page.show_ussd_exchange_result)
         self.compose_page.messages_queued.connect(self.show_outbox)
+        self.inbox_page.reply_submitted.connect(self.outbox_page.queue_reply)
+        self.outbox_page.reply_delivery_postponed.connect(self.warn_reply_postponed)
         self.dongle_monitor.inbox_messages_received.connect(self.handle_new_inbox_messages)
         self.inbox_page.unread_count_changed.connect(self.sidebar_list.show_unread_inbox_count)
         self.sidebar_list.show_unread_inbox_count(self.inbox_store.count_unread())
@@ -119,10 +122,19 @@ class MainWindow(QMainWindow):
         play_new_message_sound()
         self.inbox_page.reload()
 
+    def warn_reply_postponed(self, reason):
+        QMessageBox.warning(
+            self,
+            "Réponse en attente",
+            f"La réponse n'a pas pu partir maintenant : {reason}.\n\n"
+            "Elle reste en tête de la Boîte d'envoi et partira avant les autres messages au prochain envoi.",
+        )
+
     def show_outbox(self):
         self.sidebar_list.setCurrentRow(SIDEBAR_SECTION_NAMES.index("Boîte d'envoi"))
 
     def closeEvent(self, close_event):
+        self.compose_page.save_draft()
         self.outbox_page.shutdown()
         self.dongle_monitor.stop()
         self.dongle_monitor.wait(5000)

@@ -5,6 +5,8 @@ Supported variables for now: {nom}, {téléphone}, {détails} (case and accents 
 import re
 import unicodedata
 
+from common.sms_encoding import simplify_for_gsm7
+
 VARIABLE_PATTERN = re.compile(r"\{([^{}]*)\}")
 
 # canonical name (no accents, lowercase) -> label shown to the user
@@ -46,3 +48,10 @@ def render_message(template_text, variable_values):
         return variable_values[canonical_name] if canonical_name in variable_values else match.group(0)
 
     return VARIABLE_PATTERN.sub(replace_one_variable, template_text)
+
+
+def render_final_message_text(template_text, variable_values, simplify_to_7_bit=False):
+    """The exact text of one SMS: template filled in, trimmed, and (if asked) kept within the 7-bit alphabet. Used both when a
+    campaign is composed and when a batch is edited later, so both always produce the same text from the same variables."""
+    message_text = render_message(template_text, variable_values).strip()
+    return simplify_for_gsm7(message_text) if simplify_to_7_bit else message_text

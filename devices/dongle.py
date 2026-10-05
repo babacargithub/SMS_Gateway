@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from common.sms_encoding import MAX_PARTS_PER_MESSAGE, build_submit_pdus, is_plain_single_sms, plan_sms
 from inbox.received_sms_parser import parse_pdu_list_reply
 from sim.ussd_codec import decode_ussd_reply, encode_ussd_request
 
@@ -25,6 +26,7 @@ MODE_SWITCH_HELPER_TIMEOUT_SECONDS = 60
 SUDO_MISSING_RULE_EXIT_CODE = 1  # `sudo -n` exits with 1 when it would have asked for a password
 
 SEND_TIMEOUT_SECONDS = 30
+PAUSE_BETWEEN_PARTS_SECONDS = 1.0  # between the parts of one long message (each part is an SMS for the operator)
 LIST_MESSAGES_TIMEOUT_SECONDS = 15
 USSD_REPLY_TIMEOUT_SECONDS = 25  # USSD sessions time out after ~20-30 s
 
@@ -322,11 +324,42 @@ class DongleConnection:
         return self._write_and_read(command_text + "\r", wait_seconds, is_final_reply)
 
     def send_text_message(self, destination_number, message_text):
-        """Send one text-mode SMS. Raises SendRejected if it certainly failed,
-        SendOutcomeUnknown if the dongle may or may not have sent it."""
-        self.send_at_command("AT+CMGF=1")
+        """Send a message, as one SMS or several (accents, long text). Raises SendRejected if it certainly failed,
+        SendOutcomeUnknown if the dongle may or may not have sent it (also when only some parts of a long message went out:
+        it is then never retried, the recipient must be checked). A plain ASCII SMS keeps the text-mode path verified
+        with this dongle; anything else is sent in PDU mode."""
+        sms_plan = plan_sms(message_text)
+        if sms_plan.is_too_long:
+            raise SendRejected(f"Message trop long : plus de {MAX_PARTS_PER_MESSAGE} SMS")
+        if is_plain_single_sms(sms_plan):
+            self.send_at_command("AT+CMGF=1")
+            return self._submit_sms(f'AT+CMGS="{destination_number}"', message_text)
+        return self._send_in_pdu_mode(destination_number, sms_plan)
+
+    def _send_in_pdu_mode(self, destination_number, sms_plan):
+        if "OK" not in self.send_at_command("AT+CMGF=0"):
+            raise SendRejected("Le dongle refuse le mode PDU")
+        submit_pdus = build_submit_pdus(destination_number, sms_plan)
+        last_reply = ""
+        for part_index, (tpdu_length, pdu_hex) in enumerate(submit_pdus):
+            part_label = f"partie {part_index + 1}/{len(submit_pdus)}"
+            try:
+                last_reply = self._submit_sms(f"AT+CMGS={tpdu_length}", pdu_hex)
+            except (SendRejected, SendOutcomeUnknown) as failure:
+                if part_index == 0:
+                    raise  # nothing went out yet: the failure keeps its meaning
+                raise SendOutcomeUnknown(
+                    f"{part_label} non confirmée ({failure}) alors que {part_index} partie(s) déjà envoyée(s) : "
+                    "vérifiez auprès du destinataire"
+                )
+            if part_index + 1 < len(submit_pdus):
+                time.sleep(PAUSE_BETWEEN_PARTS_SECONDS)
+        return last_reply
+
+    def _submit_sms(self, send_command, body):
+        """`AT+CMGS` then the `>` prompt, then the body (text, or PDU hex) ended by Ctrl+Z."""
         prompt_reply = self._write_and_read(
-            f'AT+CMGS="{destination_number}"\r',
+            send_command + "\r",
             5.0,
             lambda reply: reply.rstrip().endswith(">") or is_final_reply(reply),
         )
@@ -334,7 +367,7 @@ class DongleConnection:
             self._write_and_read("\x1b", 1.0, is_final_reply)  # ESC cancels a half-open send
             raise SendRejected(prompt_reply or "Le dongle n'a pas demandé le texte du message")
         try:
-            final_reply = self._write_and_read(message_text + "\x1a", SEND_TIMEOUT_SECONDS, is_final_reply)
+            final_reply = self._write_and_read(body + "\x1a", SEND_TIMEOUT_SECONDS, is_final_reply)
         except usb.core.USBError as usb_error:
             raise SendOutcomeUnknown(f"Erreur USB pendant l'envoi : {usb_error}")
         if "+CMGS:" in final_reply:
