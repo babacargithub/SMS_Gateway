@@ -6,8 +6,15 @@ import json
 from dataclasses import dataclass, field
 
 from common.app_paths import default_database_path
+from common.blacklist_table import CREATE_BLACKLIST_TABLE_SQL, DELETE_PENDING_BLACKLISTED_MESSAGES_SQL
+from common.conversation_table import (
+    CREATE_CONVERSATIONS_TABLE_SQL,
+    add_conversation_id_column,
+    find_or_create_conversation,
+)
 from common.database import DatabaseTransaction
 from common.message_template import find_used_variables
+from common.sms_text import normalize_senegal_number
 from outbox.batch_editing import EditableMessage, plan_batch_edit
 
 WAITING = "WAITING"
@@ -129,6 +136,9 @@ class OutboxStore:
             if "variable_values" not in existing_columns:  # older messages cannot be rebuilt: they keep their final text only
                 connection.execute("ALTER TABLE messages ADD COLUMN variable_values TEXT NOT NULL DEFAULT '{}'")
             self.upgrade_campaigns_table(connection)
+            connection.execute(CREATE_CONVERSATIONS_TABLE_SQL)
+            connection.execute(CREATE_BLACKLIST_TABLE_SQL)
+            add_conversation_id_column(connection, "messages")
 
     @staticmethod
     def upgrade_campaigns_table(connection):
@@ -154,16 +164,22 @@ class OutboxStore:
         """Save the campaign and all its messages in one transaction, every message WAITING. Each message keeps its
         variable values (`variable_values` on the draft message) so the batch can be corrected later. Returns the campaign id."""
         with DatabaseTransaction(self.database_path) as connection:
+            blacklisted_numbers = {row[0] for row in connection.execute("SELECT phone_number FROM blacklisted_numbers")}
+            draft_messages = [  # blacklisted numbers are never queued
+                message for message in draft_messages
+                if (normalize_senegal_number(message.phone_number) or message.phone_number) not in blacklisted_numbers
+            ]
             campaign_id = connection.execute(
                 "INSERT INTO campaigns (message_template, list_names, variables_used, simplify_to_7_bit) VALUES (?, ?, ?, ?)",
                 (message_template, " + ".join(list_names), json.dumps(sorted(find_used_variables(message_template))), int(simplify_to_7_bit)),
             ).lastrowid
             connection.executemany(
-                "INSERT INTO messages (campaign_id, list_name, recipient_name, phone_number, message_text, state, variable_values) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages (campaign_id, list_name, recipient_name, phone_number, message_text, state, variable_values, "
+                "conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (campaign_id, message.list_name, message.recipient_name, message.phone_number, message.message_text, WAITING,
-                     json.dumps(getattr(message, "variable_values", None) or {}, ensure_ascii=False))
+                     json.dumps(getattr(message, "variable_values", None) or {}, ensure_ascii=False),
+                     find_or_create_conversation(connection, message.phone_number, message.recipient_name))
                     for message in draft_messages
                 ],
             )
@@ -176,9 +192,10 @@ class OutboxStore:
                 "INSERT INTO campaigns (message_template, list_names, is_reply) VALUES (?, ?, 1)", (message_text, REPLY_LIST_NAME)
             ).lastrowid
             return connection.execute(
-                "INSERT INTO messages (campaign_id, list_name, recipient_name, phone_number, message_text, state, priority) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (campaign_id, REPLY_LIST_NAME, recipient_name, phone_number, message_text, WAITING, REPLY_PRIORITY),
+                "INSERT INTO messages (campaign_id, list_name, recipient_name, phone_number, message_text, state, priority, "
+                "conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (campaign_id, REPLY_LIST_NAME, recipient_name, phone_number, message_text, WAITING, REPLY_PRIORITY,
+                 find_or_create_conversation(connection, phone_number, recipient_name)),
             ).lastrowid
 
     # ---- batches (campaigns) ---------------------------------------------------------------------
@@ -263,6 +280,14 @@ class OutboxStore:
             connection.execute("DELETE FROM campaigns WHERE id NOT IN (SELECT DISTINCT campaign_id FROM messages)")
         return removed_count
 
+    def remove_pending_messages_for_blacklisted_numbers(self):
+        """A number was just blacklisted: its campaign messages not sent yet (WAITING, FAILED) leave the queue. Replies you
+        typed yourself stay. Returns how many were removed."""
+        with DatabaseTransaction(self.database_path) as connection:
+            removed_count = connection.execute(DELETE_PENDING_BLACKLISTED_MESSAGES_SQL).rowcount
+            connection.execute("DELETE FROM campaigns WHERE id NOT IN (SELECT DISTINCT campaign_id FROM messages)")
+        return removed_count
+
     def count_waiting_replies(self):
         with DatabaseTransaction(self.database_path) as connection:
             return connection.execute(
@@ -302,6 +327,7 @@ class OutboxStore:
         None when nothing is waiting (or, with `replies_only`, no reply is waiting)."""
         minimum_priority = REPLY_PRIORITY if replies_only else NORMAL_PRIORITY
         with DatabaseTransaction(self.database_path) as connection:
+            connection.execute(DELETE_PENDING_BLACKLISTED_MESSAGES_SQL)  # blacklisted after queueing: skipped, never sent
             row = connection.execute(
                 "SELECT id, phone_number, message_text, priority FROM messages "
                 "WHERE state = ? AND priority >= ? ORDER BY priority DESC, id LIMIT 1",

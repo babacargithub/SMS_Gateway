@@ -42,9 +42,10 @@ DRAFT_SETTINGS_GROUP = "compose_draft"  # message, recipient choice, typed numbe
 class ComposePage(QWidget):
     messages_queued = Signal()
 
-    def __init__(self, contact_store, outbox_store):
+    def __init__(self, contact_store, outbox_store, blacklist_store=None):
         super().__init__()
         self.contact_store = contact_store
+        self.blacklist_store = blacklist_store  # numbers campaigns skip (None: no blacklist)
         self.outbox_store = outbox_store
         self.recipient_rows = []          # [(list_name, StoredContact)] of the checked lists, or the one typed number
         self.typed_number_error = ""
@@ -278,13 +279,19 @@ class ComposePage(QWidget):
 
     def refresh_composition(self):
         template_text = self.message_input.toPlainText()
-        self.current_draft = build_campaign_draft(template_text, self.recipient_rows, self.simplify_checkbox.isChecked())
+        self.current_draft = build_campaign_draft(
+            template_text, self.recipient_rows, self.simplify_checkbox.isChecked(),
+            self.blacklist_store.list_numbers() if self.blacklist_store else frozenset(),
+        )
         draft = self.current_draft
         has_template = bool(template_text.strip())
 
         if self.is_single_number_mode():
             if self.typed_number_error:
                 self.recipients_label.setText(self.typed_number_error)
+                self.recipients_label.setStyleSheet(RED_TEXT)
+            elif draft.blacklisted_count:
+                self.recipients_label.setText("Ce numéro est sur la liste noire : aucun message ne lui sera envoyé.")
                 self.recipients_label.setStyleSheet(RED_TEXT)
             elif draft.messages:
                 typed_recipient = draft.messages[0]
@@ -330,6 +337,11 @@ class ComposePage(QWidget):
             notices.append(
                 f"{format_message_count(draft.multipart_message_count)} trop long{'s' if draft.multipart_message_count > 1 else ''} pour un SMS : "
                 "envoyé(s) en plusieurs parties que le téléphone recolle, chaque partie étant facturée comme un SMS."
+            )
+        if draft.blacklisted_count and not self.is_single_number_mode():
+            notices.append(
+                f"{format_contact_count(draft.blacklisted_count)} sur liste noire : "
+                f"{choose_singular_or_plural(draft.blacklisted_count, 'ignoré', 'ignorés')}."
             )
         for variable_name, empty_count in draft.empty_value_counts.items():
             notices.append(f"{format_contact_count(empty_count)} sans valeur pour {VARIABLE_LABELS[variable_name]} : elle restera vide.")

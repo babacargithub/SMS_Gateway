@@ -383,6 +383,11 @@ class OutboxPage(QWidget):
         self.reload()
         self.deliver_waiting_replies()
 
+    def drop_pending_messages_for_blacklisted_numbers(self):
+        """A number was just blacklisted (Réception): its campaign messages not sent yet leave the queue."""
+        self.outbox_store.remove_pending_messages_for_blacklisted_numbers()
+        self.reload()
+
     def deliver_waiting_replies(self):
         """Make sure something is going to send the waiting replies."""
         if self.outbox_store.count_waiting_replies() == 0:

@@ -101,7 +101,7 @@ Layout: one folder per feature, imported from the project root (`from contacts.c
 several features goes in `common/`. Features may use `common/`; `outbox/` and `devices/` also use `sim/` and `inbox/`
 parsers, but `common/` never imports a feature.
 `common/` (shared UI + helpers, `app_paths.py`, `database.py`), `contacts/`, `compose/`, `outbox/`, `history/`, `inbox/`,
-`devices/` (USB/AT layer + monitor thread), `sim/` (balance, USSD), `mode_switcher/` (root helper), `scripts/`, `legacy/`.
+`blacklist/`, `conversations/`, `devices/` (USB/AT layer + monitor thread), `sim/` (balance, USSD), `mode_switcher/` (root helper), `scripts/`, `legacy/`.
 
 Desktop app (current):
 - `app.py` — entry point and `MainWindow` (sidebar + stacked pages). Owns the `DongleMonitor` thread.
@@ -168,12 +168,19 @@ Desktop app (current):
   `inbox/sms_assembler.py` — pure: parts → complete messages. A long SMS is stored **only when every part is on the SIM** (parts stay there meanwhile);
   after 10 minutes an incomplete one is stored with a « […] » marker where the part is missing. Tests: `~/usbenv/bin/python -m unittest discover tests`.
   Messages stored before this change (text mode) may still be cut into fragments in the wrong order: they cannot be repaired, delete them.
-- **Replies (Inbox → priority queue):** Réception has a reply icon column (blue arrow, only for senders that are real `+221` numbers, not « Expresso » or short codes). Click → `inbox/reply_dialog.py`
-  (quoted original, 160-char counter, accents simplified) → `InboxPage.reply_submitted` → `OutboxPage.queue_reply` (wired in `app.py`). `OutboxStore.queue_reply` stores a message with `priority=1`
+- **Replies (Inbox → priority queue):** Réception has a reply icon column (blue arrow, only for senders that are real `+221` numbers, not « Expresso » or short codes). Click → the **conversation dialog** (see below) → `InboxPage.reply_submitted` → `OutboxPage.queue_reply` (wired in `app.py`). `OutboxStore.queue_reply` stores a message with `priority=1`
   (own one-message campaign, list « Réponse »); claims and the Outbox list order by `priority DESC, id`. `SendingWorker`: once the message in flight is done, every waiting reply goes out
   one after the other without the campaign pause (a reply cuts the pause short); `replies_only=True` workers (`OutboxPage.reply_worker`) deliver replies while the campaign is idle, paused or
   stopping, end when none is left, and on « no dongle » end and leave the reply first in line (`reply_delivery_postponed` → warning in `app.py`). Delivered replies reach the Historique like other SENT messages.
   Tests: `tests/test_reply_priority_queue.py`. **Not yet verified with the real dongle.**
+- **Conversations:** one `conversations` row per correspondent (`conversation_key` = normalized `+221…` number, or the raw sender name such as « Expresso »); `messages` (sent, incl. batch messages and replies) and `received_messages` both carry `conversation_id`,
+  set in the same transaction that saves the message (`common/conversation_table.py`: `find_or_create_conversation`). `conversations/conversation_store.py` reads a thread (sent + received, oldest first; a SENT message is dated `updated_at`,
+  others `created_at`) and runs the **one-time grouping** of older messages when created in `app.py` (idempotent, writes `sms_gateway.db.before-conversations.bak` first). `conversations/conversation_dialog.py` = WhatsApp-style dialog
+  (received left grey, sent right green, failed red, French date under each bubble, day separators, state label for unsent messages, composer below with the 7-bit option; refreshes every 2 s). The Réception reply icon opens it for every sender
+  (read-only for « Expresso »/short codes); opening it marks that sender's messages read; sending emits `reply_submitted` → `OutboxPage.queue_reply` (priority queue). Tests: `tests/test_conversations.py`. **Not yet checked with the real dongle.**
+- **Blacklist:** `blacklisted_numbers` table (normalized `+221…`), `blacklist/blacklist_store.py`. Campaigns skip these numbers at three levels: the Composer draft (`build_campaign_draft(blacklisted_numbers=…)`, counted in a notice; a typed blacklisted number blocks Lancer),
+  `OutboxStore.queue_campaign` (never stores them) and `claim_next_waiting_message` (deletes pending campaign messages of a number blacklisted meanwhile). Manual replies (priority 1) are never blocked. Added from the conversation dialog's « Paramètres » menu
+  (« Mettre sur liste noire », confirm default Non, or « Retirer de la liste noire »); `blacklist_changed` → `OutboxPage.drop_pending_messages_for_blacklisted_numbers`. Tests: `tests/test_blacklist.py`. Still to do: a page to list/remove blacklisted numbers, auto-blacklist on « STOP ».
 - `inbox/inbox_store.py` — SQLite `received_messages` (unique on sender+time+text, `is_read`); sender name looked up from contacts.
 - `inbox/inbox_page.py` — Réception: table (unread in bold), preview pane, selecting marks read, mark-all-read, delete (confirm). Sidebar shows `Réception (n)`.
 - `DongleMonitor._drain_sim_inboxes` — when the dongle announces a new SMS (`+CMTI`, enabled with `AT+CNMI=2,1,0,0,0` at connect), at startup and on every new connection, plus a 20 s safety timer (3 s polling if the dongle refuses `AT+CNMI`): read SIM in PDU mode → assemble long messages → store in DB → only then `AT+CMGD` every slot of each stored message; emits `inbox_messages_received` → `inbox/notification_sound.py` (afplay Glass.aiff). **Not yet verified with the real dongle.** Long SMS are reassembled from their parts (PDU mode).

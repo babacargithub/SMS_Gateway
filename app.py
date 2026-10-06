@@ -21,6 +21,8 @@ from outbox.outbox_page import OutboxPage
 from outbox.outbox_store import OutboxStore
 from devices.devices_page import DevicesPage
 from history.history_page import HistoryPage
+from blacklist.blacklist_store import BlacklistStore
+from conversations.conversation_store import ConversationStore
 from inbox.inbox_page import InboxPage
 from inbox.inbox_store import InboxStore
 from inbox.notification_sound import play_new_message_sound
@@ -56,13 +58,15 @@ class MainWindow(QMainWindow):
         self.outbox_store.archive_sent_messages()  # a run cut short by a crash: its sent messages go to the Historique
         self.outbox_store.recover_interrupted_sends()  # messages cut off mid-send last time become "Non confirmé"
         self.inbox_store = InboxStore()
+        self.blacklist_store = BlacklistStore()
+        self.conversation_store = ConversationStore()  # also groups the messages from before conversations existed
         self.dongle_monitor = DongleMonitor(self.inbox_store)
         self.message_sender = DongleMessageSender(self.dongle_monitor)
-        self.compose_page = ComposePage(self.contact_store, self.outbox_store)
+        self.compose_page = ComposePage(self.contact_store, self.outbox_store, self.blacklist_store)
         self.outbox_page = OutboxPage(self.outbox_store, self.message_sender)
         self.contacts_page = ContactsPage(self.contact_store)
         self.history_page = HistoryPage(self.outbox_store)
-        self.inbox_page = InboxPage(self.inbox_store)
+        self.inbox_page = InboxPage(self.inbox_store, self.conversation_store, self.blacklist_store)
         self.sim_page = SimPage()
         dedicated_pages = {
             "Appareils": self.devices_page,
@@ -87,6 +91,7 @@ class MainWindow(QMainWindow):
         self.dongle_monitor.ussd_exchange_finished.connect(self.sim_page.show_ussd_exchange_result)
         self.compose_page.messages_queued.connect(self.show_outbox)
         self.inbox_page.reply_submitted.connect(self.outbox_page.queue_reply)
+        self.inbox_page.blacklist_changed.connect(self.outbox_page.drop_pending_messages_for_blacklisted_numbers)
         self.outbox_page.reply_delivery_postponed.connect(self.warn_reply_postponed)
         self.dongle_monitor.inbox_messages_received.connect(self.handle_new_inbox_messages)
         self.inbox_page.unread_count_changed.connect(self.sidebar_list.show_unread_inbox_count)

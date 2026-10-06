@@ -2,6 +2,11 @@
 from dataclasses import dataclass
 
 from common.app_paths import default_database_path
+from common.conversation_table import (
+    CREATE_CONVERSATIONS_TABLE_SQL,
+    add_conversation_id_column,
+    find_or_create_conversation,
+)
 from common.database import DatabaseTransaction
 from common.sms_text import normalize_senegal_number
 
@@ -43,6 +48,8 @@ class InboxStore:
         with DatabaseTransaction(self.database_path) as connection:
             connection.execute(CREATE_RECEIVED_MESSAGES_TABLE_SQL)
             connection.execute(CREATE_DUPLICATE_GUARD_INDEX_SQL)
+            connection.execute(CREATE_CONVERSATIONS_TABLE_SQL)
+            add_conversation_id_column(connection, "received_messages")
 
     def store_received_messages(self, received_messages):
         """Save the messages in one transaction. Returns how many were new (copies already stored are ignored).
@@ -51,8 +58,10 @@ class InboxStore:
             inserted_count = 0
             for received_message in received_messages:
                 inserted_count += connection.execute(
-                    "INSERT OR IGNORE INTO received_messages (sender_number, message_text, received_at) VALUES (?, ?, ?)",
-                    (received_message.sender_number, received_message.message_text, received_message.received_at),
+                    "INSERT OR IGNORE INTO received_messages (sender_number, message_text, received_at, conversation_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    (received_message.sender_number, received_message.message_text, received_message.received_at,
+                     find_or_create_conversation(connection, received_message.sender_number)),
                 ).rowcount
         return inserted_count
 

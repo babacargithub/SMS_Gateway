@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
 from common.dialogs import ask_yes_no_defaulting_to_no
 from common.french_labels import format_french_datetime, format_message_count, format_number
 from common.icons import CHECK_CIRCLE_ICON_SHAPES, REPLY_ICON_SHAPES, TRASH_ICON_SHAPES, build_colored_icon
-from inbox.reply_dialog import ReplyDialog
+from blacklist.blacklist_store import BlacklistStore
+from conversations.conversation_dialog import ConversationDialog
+from conversations.conversation_store import ConversationStore
 from inbox.inbox_store import InboxStore
 from common.sms_text import normalize_senegal_number
 from common.table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS
@@ -87,10 +89,10 @@ class InboxTableModel(QAbstractTableModel):
                 format_french_datetime(inbox_message.received_at),
             )[column]
         if column == REPLY_COLUMN:
-            if role == Qt.DecorationRole and reply_number_of(inbox_message):
+            if role == Qt.DecorationRole:
                 return self.reply_icon
             if role == Qt.ToolTipRole:
-                return "Répondre" if reply_number_of(inbox_message) else "Impossible de répondre à cet expéditeur"
+                return "Ouvrir la conversation" if reply_number_of(inbox_message) else "Ouvrir la conversation (réponse impossible)"
             if role == Qt.TextAlignmentRole:
                 return int(Qt.AlignCenter)
         if role == Qt.FontRole and not inbox_message.is_read:
@@ -109,10 +111,13 @@ class InboxPage(QWidget):
 
     unread_count_changed = Signal(int)
     reply_submitted = Signal(str, str, str)  # number to answer, recipient name (may be empty), reply text
+    blacklist_changed = Signal()  # a number was blacklisted: the Outbox drops its pending campaign messages
 
-    def __init__(self, inbox_store: InboxStore):
+    def __init__(self, inbox_store: InboxStore, conversation_store: ConversationStore, blacklist_store: BlacklistStore):
         super().__init__()
+        self.blacklist_store = blacklist_store
         self.inbox_store = inbox_store
+        self.conversation_store = conversation_store
 
         self.summary_label = QLabel("")
         self.mark_all_read_button = QPushButton(
@@ -195,22 +200,28 @@ class InboxPage(QWidget):
         self.unread_count_changed.emit(unread_count)
 
     def show_hand_cursor_over_reply_icon(self, hovered_index):
-        can_reply = hovered_index.column() == REPLY_COLUMN and reply_number_of(self.table_model.message_at_row(hovered_index.row()))
-        self.messages_table.viewport().setCursor(Qt.PointingHandCursor if can_reply else Qt.ArrowCursor)
+        is_over_conversation_icon = hovered_index.column() == REPLY_COLUMN
+        self.messages_table.viewport().setCursor(Qt.PointingHandCursor if is_over_conversation_icon else Qt.ArrowCursor)
 
     def handle_cell_click(self, clicked_index):
         if clicked_index.column() == REPLY_COLUMN:
             self.reply_to_message(self.table_model.message_at_row(clicked_index.row()))
 
     def reply_to_message(self, inbox_message):
+        """Opens the whole conversation with this sender (a sender such as « Expresso » can be read but not answered)."""
         number_to_answer = reply_number_of(inbox_message)
-        if number_to_answer is None:
-            return  # an alphanumeric sender (« Expresso ») or short code cannot receive an SMS
-        reply_dialog = ReplyDialog(self, format_sender(inbox_message), inbox_message.message_text, inbox_message.received_at)
-        if reply_dialog.exec() != ReplyDialog.Accepted:
-            return
-        self.reply_submitted.emit(number_to_answer, inbox_message.sender_name, reply_dialog.reply_text())
-        self.feedback_label.setText(f"Réponse à {inbox_message.sender_name or number_to_answer} mise en file prioritaire.")
+        conversation_dialog = ConversationDialog(
+            self, self.conversation_store, self.blacklist_store, number_to_answer or inbox_message.sender_number,
+            can_reply=number_to_answer is not None,
+        )
+        conversation_dialog.reply_submitted.connect(self.forward_reply_from_conversation)
+        conversation_dialog.blacklist_changed.connect(self.blacklist_changed)
+        conversation_dialog.exec()
+        self.reload()  # opening the conversation marked its received messages as read
+
+    def forward_reply_from_conversation(self, number_to_answer, recipient_name, reply_text):
+        self.reply_submitted.emit(number_to_answer, recipient_name, reply_text)
+        self.feedback_label.setText(f"Message à {recipient_name or number_to_answer} mis en file prioritaire.")
         QTimer.singleShot(FEEDBACK_DISPLAY_MILLISECONDS, lambda: self.feedback_label.setText(""))
 
     def selected_rows(self):

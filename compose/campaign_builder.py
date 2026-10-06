@@ -20,6 +20,7 @@ class DraftMessage:
 @dataclass
 class CampaignDraft:
     messages: list = field(default_factory=list)
+    blacklisted_count: int = 0          # recipients skipped because their number is on the blacklist
     duplicate_count: int = 0            # same number found in several selected lists: kept once
     empty_value_counts: dict = field(default_factory=dict)  # variable -> contacts where its value is empty
     too_long_count: int = 0             # messages over the maximum number of SMS parts
@@ -43,8 +44,9 @@ def contact_variable_values(contact):
 MAX_REPORTED_CHARACTERS_FORCING_UNICODE = 8
 
 
-def build_campaign_draft(template_text, contacts_with_list_names, simplify_to_7_bit=False):
+def build_campaign_draft(template_text, contacts_with_list_names, simplify_to_7_bit=False, blacklisted_numbers=frozenset()):
     """contacts_with_list_names: [(list_name, StoredContact)]. Each phone number is kept only once.
+    `blacklisted_numbers` ('+221…') are skipped and counted.
     `simplify_to_7_bit` replaces characters outside the GSM alphabet (ê → e, ç → c) so no message turns into Unicode."""
     used_variables = find_used_variables(template_text)
     campaign_draft = CampaignDraft()
@@ -52,6 +54,9 @@ def build_campaign_draft(template_text, contacts_with_list_names, simplify_to_7_
     for list_name, contact in contacts_with_list_names:
         if contact.phone_number in phone_numbers_already_kept:
             campaign_draft.duplicate_count += 1
+            continue
+        if contact.phone_number in blacklisted_numbers:
+            campaign_draft.blacklisted_count += 1
             continue
         phone_numbers_already_kept.add(contact.phone_number)
 
