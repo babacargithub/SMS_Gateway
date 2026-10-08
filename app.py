@@ -16,6 +16,7 @@ from compose.compose_page import ComposePage
 from compose.sms_cost_estimate import SimSmsPrice
 from contacts.contact_store import ContactStore
 from contacts.contacts_page import ContactsPage
+from gateways.supported_gateways import build_supported_gateways
 from outbox.message_sender import DongleMessageSender
 from outbox.outbox_page import OutboxPage
 from outbox.outbox_store import OutboxStore
@@ -62,12 +63,13 @@ class MainWindow(QMainWindow):
         self.conversation_store = ConversationStore()  # also groups the messages from before conversations existed
         self.dongle_monitor = DongleMonitor(self.inbox_store)
         self.message_sender = DongleMessageSender(self.dongle_monitor)
+        supported_gateways = build_supported_gateways()  # shared: one Orange client (token cache) for the Outbox and the SIM page
         self.compose_page = ComposePage(self.contact_store, self.outbox_store, self.blacklist_store)
-        self.outbox_page = OutboxPage(self.outbox_store, self.message_sender)
+        self.outbox_page = OutboxPage(self.outbox_store, self.message_sender, supported_gateways)
         self.contacts_page = ContactsPage(self.contact_store)
         self.history_page = HistoryPage(self.outbox_store)
         self.inbox_page = InboxPage(self.inbox_store, self.conversation_store, self.blacklist_store)
-        self.sim_page = SimPage()
+        self.sim_page = SimPage(supported_gateways)
         dedicated_pages = {
             "Appareils": self.devices_page,
             "Composer": self.compose_page,

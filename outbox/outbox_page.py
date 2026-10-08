@@ -20,6 +20,7 @@ from common.french_labels import MESSAGE_STATE_LABELS, format_french_datetime, f
 from outbox.batch_manager_dialog import BatchManagerDialog
 from outbox.batches_panel import BatchesPanel
 from outbox.sending_speed import DEFAULT_SENDING_SPEED_KEY, SENDING_SPEEDS, find_sending_speed
+from outbox.sending_method_dialog import SIM_METHOD_KEY, SendingMethodDialog
 from outbox.sending_worker import SendingWorker
 from common.table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS
 from common.icons import (
@@ -141,10 +142,11 @@ class OutboxPage(QWidget):
 
     reply_delivery_postponed = Signal(str)  # why a reply could not be sent now (it stays first in the queue)
 
-    def __init__(self, outbox_store_instance, message_sender):
+    def __init__(self, outbox_store_instance, message_sender, gateways=()):
         super().__init__()
         self.outbox_store = outbox_store_instance
-        self.message_sender = message_sender
+        self.message_sender = message_sender  # the SIM dongle: also what delivers the replies (gateways only send campaigns)
+        self.gateways = list(gateways)
         self.state_icons = build_state_icons()
         self.sending_worker = None
         self.reply_worker = None  # sends just the replies while the campaign is idle or paused
@@ -357,12 +359,13 @@ class OutboxPage(QWidget):
             self.sending_worker.resume()
             self.run_state = RUNNING
         elif self.run_state == IDLE and self.waiting_count + self.failed_count > 0:
-            if not self.confirm_real_sending():
+            campaign_sender, sending_method_name = self.choose_campaign_sender()
+            if campaign_sender is None or not self.confirm_real_sending(sending_method_name):
                 return
             self.outbox_store.requeue_failed_messages()
             self.reload()
             self.sending_worker = SendingWorker(
-                self.outbox_store, self.message_sender, self.selected_sending_speed().gap_seconds_range
+                self.outbox_store, campaign_sender, self.selected_sending_speed().gap_seconds_range
             )
             self.sending_worker.message_state_changed.connect(self.show_message_state_change)
             self.sending_worker.progress_changed.connect(self.show_progress)
@@ -459,7 +462,19 @@ class OutboxPage(QWidget):
         if self.sending_worker is not None and self.sending_worker.isRunning():
             self.sending_worker.gap_seconds_range = self.selected_sending_speed().gap_seconds_range
 
-    def confirm_real_sending(self):
+    def choose_campaign_sender(self):
+        """Ask « SIM or gateway ? ». Returns (sender, French name of the method), or (None, None) if cancelled."""
+        if not self.gateways:
+            return self.message_sender, "la SIM"
+        method_dialog = SendingMethodDialog(self, self.gateways, self.waiting_count + self.failed_count)
+        if method_dialog.exec() != SendingMethodDialog.Accepted:
+            return None, None
+        if method_dialog.chosen_method_key == SIM_METHOD_KEY:
+            return self.message_sender, "la SIM"
+        chosen_gateway = next(gateway for gateway in self.gateways if gateway.key == method_dialog.chosen_method_key)
+        return chosen_gateway.create_message_sender(), f"l'offre {chosen_gateway.display_name}"
+
+    def confirm_real_sending(self, sending_method_name="la SIM"):
         average_gap_seconds = sum(self.selected_sending_speed().gap_seconds_range) / 2 + SEND_DURATION_SECONDS
         messages_to_send_count = self.waiting_count + self.failed_count
         estimated_minutes = max(1, round(messages_to_send_count * average_gap_seconds / 60))
@@ -472,7 +487,7 @@ class OutboxPage(QWidget):
             f"Envoyer réellement {format_message_count(messages_to_send_count)} par SMS ?\n\n"
             f"{failed_note}"
             f"Durée estimée : environ {format_number(estimated_minutes)} min. "
-            "Les SMS envoyés ne peuvent pas être rappelés et consomment le crédit de la SIM.",
+            f"Les SMS envoyés ne peuvent pas être rappelés et consomment le crédit de {sending_method_name}.",
         )
 
     def pause_because_dongle_unavailable(self, reason):

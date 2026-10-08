@@ -61,3 +61,12 @@ MESSAGE_STATE_LABELS = {
     "FAILED": "Échec",
     "UNKNOWN": "Non confirmé",
 }
+
+
+def format_gateway_balance(available_units, nearest_expiration):
+    """Remaining units of an online SMS offer, e.g. '26 SMS' or '1 200 SMS (expire le 31/12/2026)'.
+    Offers that expire after 2090 are open-ended: no date shown."""
+    balance_text = format_sms_count(available_units)
+    if nearest_expiration is not None and nearest_expiration.year < 2090:
+        balance_text += f" (expire le {nearest_expiration.strftime('%d/%m/%Y')})"
+    return balance_text
