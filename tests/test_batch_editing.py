@@ -39,7 +39,8 @@ class BatchEditingTest(unittest.TestCase):
         with sqlite3.connect(self.database_path) as connection:
             stored = json.loads(connection.execute(
                 "SELECT variable_values FROM messages WHERE phone_number = '+221773300853'").fetchone()[0])
-        self.assertEqual(stored, {"nom": "Babacar", "telephone": "+221773300853", "details": "Ville : Dakar"})
+        extra_columns_left_empty = {f"col{n}": "" for n in range(1, 11)}
+        self.assertEqual(stored, {"nom": "Babacar", "telephone": "+221773300853", "details": "Ville : Dakar", **extra_columns_left_empty})
 
     def test_batch_keeps_its_template_and_used_variables(self):
         batch = self.store.get_batch(self.campaign_id)

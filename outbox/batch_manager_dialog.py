@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from common.dialogs import ask_yes_no_defaulting_to_no
 from common.french_labels import MESSAGE_STATE_LABELS, format_french_datetime, format_message_count, format_number, format_sms_count
 from common.icons import TRASH_ICON_SHAPES, build_colored_icon
-from common.message_template import VARIABLE_LABELS
+from common.message_template import BASE_VARIABLE_LABELS, EXTRA_COLUMN_NAMES, VARIABLE_LABELS
 from common.sms_preferences import SIMPLIFY_CHECKBOX_LABEL, SIMPLIFY_CHECKBOX_TOOLTIP
 from outbox import outbox_store
 from outbox.batch_editing import plan_batch_edit
@@ -59,7 +59,7 @@ class BatchManagerDialog(QDialog):
         self.template_input.setMinimumHeight(EDITOR_MIN_HEIGHT_PIXELS)
         variable_buttons_layout = QHBoxLayout()
         variable_buttons_layout.addWidget(QLabel("Insérer une variable :"))
-        for variable_label in VARIABLE_LABELS.values():
+        for variable_label in self.variable_labels_of_this_batch():
             variable_button = QPushButton(variable_label)
             variable_button.clicked.connect(partial(self.insert_variable, variable_label))
             variable_buttons_layout.addWidget(variable_button)
@@ -159,6 +159,16 @@ class BatchManagerDialog(QDialog):
             self.simplify_checkbox.blockSignals(False)
         self.refresh_preview()
 
+    def variable_labels_of_this_batch(self):
+        """{nom}, {téléphone}, {détails} plus the {colN} that at least one message of this batch has a value for."""
+        columns_with_values = {
+            variable_name
+            for editable_message in self.outbox_store.list_editable_messages(self.campaign_id)
+            for variable_name, variable_value in editable_message.variable_values.items()
+            if variable_name in EXTRA_COLUMN_NAMES and variable_value
+        }
+        return list(BASE_VARIABLE_LABELS.values()) + [VARIABLE_LABELS[name] for name in EXTRA_COLUMN_NAMES if name in columns_with_values]
+
     def insert_variable(self, variable_label):
         self.template_input.insertPlainText(variable_label)
         self.template_input.setFocus()
@@ -189,7 +199,7 @@ class BatchManagerDialog(QDialog):
             )
         if batch_edit_plan.legacy_count:
             notices.append(
-                f"{format_message_count(batch_edit_plan.legacy_count)} créé(s) avant l'enregistrement des variables ne peu(ven)t pas être modifié(s) : "
+                f"{format_message_count(batch_edit_plan.legacy_count)} ne peu(ven)t pas être reconstruit(s) avec ce texte (créés avant l'enregistrement des variables, ou sans la valeur d'une variable utilisée) : "
                 "ils partiront avec leur texte actuel."
             )
         if batch_edit_plan.unicode_message_count and not rejection_reason:

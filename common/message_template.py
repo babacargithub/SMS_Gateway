@@ -1,7 +1,7 @@
 """Message templates with {variables}, filled in for each contact. No UI, no database.
 
-Supported variables for now: {nom}, {téléphone}, {détails} (case and accents are ignored, so
-{Nom}, {telephone} and {DÉTAILS} work too). More columns can be added to VARIABLE_LABELS later."""
+Supported variables: {nom}, {téléphone}, {détails} and {col1} … {col10} (the extra columns chosen when a contact file is
+imported). Case and accents are ignored, so {Nom}, {telephone} and {DÉTAILS} work too."""
 import re
 import unicodedata
 
@@ -10,11 +10,15 @@ from common.sms_encoding import simplify_for_gsm7
 VARIABLE_PATTERN = re.compile(r"\{([^{}]*)\}")
 
 # canonical name (no accents, lowercase) -> label shown to the user
-VARIABLE_LABELS = {
+MAX_EXTRA_COLUMNS = 10
+EXTRA_COLUMN_NAMES = [f"col{column_number}" for column_number in range(1, MAX_EXTRA_COLUMNS + 1)]
+BASE_VARIABLE_LABELS = {
     "nom": "{nom}",
     "telephone": "{téléphone}",
     "details": "{détails}",
 }
+VARIABLE_LABELS = {**BASE_VARIABLE_LABELS, **{column_name: "{" + column_name + "}" for column_name in EXTRA_COLUMN_NAMES}}
+POSSIBLE_VARIABLES_DESCRIPTION = ", ".join(BASE_VARIABLE_LABELS.values()) + f", {{col1}} à {{col{MAX_EXTRA_COLUMNS}}}"
 
 
 def canonical_variable_name(raw_variable_name):

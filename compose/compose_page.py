@@ -16,11 +16,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from compose.campaign_builder import CampaignDraft, build_campaign_draft
+from compose.campaign_builder import CampaignDraft, build_campaign_draft, sample_extra_column_values
 from common.french_labels import choose_singular_or_plural, format_contact_count, format_message_count, format_number, format_sms_count
 from compose.sms_cost_estimate import describe_estimated_costs
 from compose.typed_recipient import TYPED_NUMBER_LIST_NAME, build_typed_recipient_rows
-from common.message_template import VARIABLE_LABELS, find_unknown_variables
+from common.message_template import BASE_VARIABLE_LABELS, POSSIBLE_VARIABLES_DESCRIPTION, VARIABLE_LABELS, find_unknown_variables
 from common.sms_preferences import (
     SIMPLIFY_CHECKBOX_LABEL,
     SIMPLIFY_CHECKBOX_TOOLTIP,
@@ -50,6 +50,7 @@ class ComposePage(QWidget):
         self.recipient_rows = []          # [(list_name, StoredContact)] of the checked lists, or the one typed number
         self.typed_number_error = ""
         self.current_draft = CampaignDraft()
+        self.extra_column_samples = {}    # {"col1": ["Dakar", …]} for the columns the chosen recipients have
         self.sim_prices = []              # SimSmsPrice of each ready dongle whose operator has a known price
 
         self.lists_radio = QRadioButton("Listes de contacts")
@@ -92,11 +93,16 @@ class ComposePage(QWidget):
 
         self.variable_buttons_layout = QHBoxLayout()
         self.variable_buttons_layout.addWidget(QLabel("Insérer une variable :"))
-        for variable_label in VARIABLE_LABELS.values():
-            variable_button = QPushButton(variable_label)
-            variable_button.clicked.connect(partial(self.insert_variable, variable_label))
-            self.variable_buttons_layout.addWidget(variable_button)
+        for variable_label in BASE_VARIABLE_LABELS.values():
+            self.variable_buttons_layout.addWidget(self.build_variable_button(variable_label))
+        self.extra_column_buttons_layout = QHBoxLayout()   # {col1}… only for the columns the chosen lists actually have
+        self.extra_column_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.variable_buttons_layout.addLayout(self.extra_column_buttons_layout)
         self.variable_buttons_layout.addStretch()
+        self.extra_column_preview_label = QLabel("")
+        self.extra_column_preview_label.setStyleSheet(GRAY_TEXT)
+        self.extra_column_preview_label.setWordWrap(True)
+        self.extra_column_preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.message_input = QPlainTextEdit()
         self.message_input.setPlaceholderText("Saisissez votre message... Exemple : Bonjour {nom}, votre rendez-vous est confirmé.")
@@ -129,6 +135,7 @@ class ComposePage(QWidget):
         page_layout.addWidget(self.recipients_label)
         page_layout.addWidget(self.section_title("2. Message"))
         page_layout.addLayout(self.variable_buttons_layout)
+        page_layout.addWidget(self.extra_column_preview_label)
         page_layout.addWidget(self.message_input, stretch=1)
         page_layout.addWidget(self.simplify_checkbox)
         page_layout.addWidget(self.counter_label)
@@ -160,6 +167,11 @@ class ComposePage(QWidget):
 
         self.reload_lists()
         self.restore_draft()
+
+    def build_variable_button(self, variable_label):
+        variable_button = QPushButton(variable_label)
+        variable_button.clicked.connect(partial(self.insert_variable, variable_label))
+        return variable_button
 
     @staticmethod
     def section_title(title_text):
@@ -263,7 +275,24 @@ class ComposePage(QWidget):
         else:
             self.typed_number_error = ""
             self.recipient_rows = self.contact_store.list_contacts_for_lists(self.checked_list_ids())
+        self.refresh_extra_column_variables()
         self.refresh_composition()
+
+    def refresh_extra_column_variables(self):
+        """One button and one line of example values per {colN} that the chosen recipients really have."""
+        new_samples = sample_extra_column_values(self.recipient_rows)
+        if new_samples.keys() != self.extra_column_samples.keys():
+            while self.extra_column_buttons_layout.count():
+                self.extra_column_buttons_layout.takeAt(0).widget().deleteLater()
+            for column_name in new_samples:
+                self.extra_column_buttons_layout.addWidget(self.build_variable_button(VARIABLE_LABELS[column_name]))
+        self.extra_column_samples = new_samples
+        preview_lines = [
+            f"{VARIABLE_LABELS[column_name]} : " + "  ·  ".join(samples) + ("…" if len(self.recipient_rows) > len(samples) else "")
+            for column_name, samples in new_samples.items()
+        ]
+        self.extra_column_preview_label.setText("Exemples de valeurs :\n" + "\n".join(preview_lines) if preview_lines else "")
+        self.extra_column_preview_label.setVisible(bool(preview_lines))
 
     def set_sim_prices(self, sim_prices):
         """Called whenever the dongles change: the price per SMS of each ready SIM."""
@@ -317,7 +346,7 @@ class ComposePage(QWidget):
         unknown_variables = find_unknown_variables(template_text)
         if unknown_variables:
             problems.append("Variable inconnue : " + ", ".join("{" + name + "}" for name in unknown_variables)
-                            + ". Variables possibles : " + ", ".join(VARIABLE_LABELS.values()) + ".")
+                            + ". Variables possibles : " + POSSIBLE_VARIABLES_DESCRIPTION + ".")
         if draft.too_long_count:
             problems.append(f"{format_message_count(draft.too_long_count)} {choose_singular_or_plural(draft.too_long_count, 'dépasse', 'dépassent')} {MAX_PARTS_PER_MESSAGE} SMS : raccourcissez le message.")
         if has_template and draft.empty_message_count:

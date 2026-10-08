@@ -5,7 +5,7 @@ Deleting a list deletes its contacts (ON DELETE CASCADE)."""
 import json
 import shutil
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from common.app_paths import default_database_path
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     name          TEXT NOT NULL DEFAULT '',
     phone_number  TEXT NOT NULL,
     custom_fields TEXT NOT NULL DEFAULT '{}',
+    column_values TEXT NOT NULL DEFAULT '{}',
     source_file   TEXT NOT NULL DEFAULT '',
     imported_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (list_id, phone_number)
@@ -54,6 +55,7 @@ class StoredContact:
     name: str
     phone_number: str
     custom_fields: dict
+    column_values: dict = field(default_factory=dict)   # "col1" -> value, the {col1} … {col10} variables
 
 
 class ContactStore:
@@ -64,6 +66,9 @@ class ContactStore:
         with self._connect() as connection:
             connection.execute(CREATE_LISTS_TABLE_SQL)
             connection.execute(CREATE_CONTACTS_TABLE_SQL)
+            contact_columns = [row[1] for row in connection.execute("PRAGMA table_info(contacts)")]
+            if "column_values" not in contact_columns:   # database created before {col1} … {col10} existed
+                connection.execute("ALTER TABLE contacts ADD COLUMN column_values TEXT NOT NULL DEFAULT '{}'")
 
     def _connect(self):
         return DatabaseTransaction(self.database_path)
@@ -156,10 +161,11 @@ class ContactStore:
     def _insert_contacts(connection, list_id, parsed_contacts, source_file_name):
         changes_before = connection.total_changes
         connection.executemany(
-            "INSERT OR IGNORE INTO contacts (list_id, name, phone_number, custom_fields, source_file) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO contacts (list_id, name, phone_number, custom_fields, column_values, source_file) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             [
-                (list_id, contact.name, contact.phone_number, json.dumps(contact.custom_fields, ensure_ascii=False), source_file_name)
+                (list_id, contact.name, contact.phone_number, json.dumps(contact.custom_fields, ensure_ascii=False),
+                 json.dumps(getattr(contact, "column_values", {}), ensure_ascii=False), source_file_name)
                 for contact in parsed_contacts
             ],
         )
@@ -170,10 +176,10 @@ class ContactStore:
     def list_contacts(self, list_id):
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, name, phone_number, custom_fields FROM contacts WHERE list_id = ? ORDER BY id",
+                "SELECT id, name, phone_number, custom_fields, column_values FROM contacts WHERE list_id = ? ORDER BY id",
                 (list_id,),
             ).fetchall()
-        return [StoredContact(row[0], row[1], row[2], json.loads(row[3])) for row in rows]
+        return [StoredContact(row[0], row[1], row[2], json.loads(row[3]), json.loads(row[4])) for row in rows]
 
     def list_contacts_for_lists(self, list_ids):
         """Contacts of several lists, as [(list_name, StoredContact)], ordered by list name then import order."""
@@ -182,13 +188,13 @@ class ContactStore:
         placeholders = ",".join("?" * len(list_ids))
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT contact_lists.name, contacts.id, contacts.name, contacts.phone_number, contacts.custom_fields "
+                "SELECT contact_lists.name, contacts.id, contacts.name, contacts.phone_number, contacts.custom_fields, contacts.column_values "
                 "FROM contacts JOIN contact_lists ON contact_lists.id = contacts.list_id "
                 f"WHERE contacts.list_id IN ({placeholders}) "
                 "ORDER BY contact_lists.name COLLATE NOCASE, contacts.id",
                 list(list_ids),
             ).fetchall()
-        return [(row[0], StoredContact(row[1], row[2], row[3], json.loads(row[4]))) for row in rows]
+        return [(row[0], StoredContact(row[1], row[2], row[3], json.loads(row[4]), json.loads(row[5]))) for row in rows]
 
     def delete_contacts(self, contact_ids):
         with self._connect() as connection:

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from contacts.contact_import import read_spreadsheet
 from common.dialogs import ask_yes_no_defaulting_to_no
-from common.french_labels import format_contact_count, format_custom_fields, format_french_date
+from common.french_labels import format_contact_count, format_french_date
 from contacts.contact_store import ListNameAlreadyExists
 from common.table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS, build_position_item
 from common.icons import EDIT_ICON_SHAPES, TRASH_ICON_SHAPES, build_colored_icon
@@ -37,7 +37,8 @@ ICON_BUTTON_STYLE = (
     "QToolButton { border: none; border-radius: 6px; }"
     "QToolButton:hover { background: rgba(128, 128, 128, 0.22); }"
 )
-CONTACT_COLUMN_TITLES = [POSITION_COLUMN_TITLE, "Nom", "Téléphone", "Détails"]
+CONTACT_COLUMN_TITLES = [POSITION_COLUMN_TITLE, "Nom", "Téléphone"]   # then one column per extra column of the imported file
+FIXED_COLUMN_COUNT = len(CONTACT_COLUMN_TITLES)
 FILE_DIALOG_FILTER = "Fichiers de contacts (*.xlsx *.xlsm *.csv);;Tous les fichiers (*)"
 EMPTY_STATE_STYLE = "font-size: 16px; color: gray;"
 
@@ -199,7 +200,7 @@ class ContactsPage(QWidget):
         self.contacts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.contacts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
         self.contacts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.contacts_table.horizontalHeader().setStretchLastSection(True)
+        self.contacts_table.horizontalHeader().setStretchLastSection(True)   # the extra columns keep the default interactive width
         self.contacts_table.setColumnWidth(0, POSITION_COLUMN_WIDTH_PIXELS)
         self.contacts_table.setColumnWidth(1, 220)
 
@@ -225,13 +226,21 @@ class ContactsPage(QWidget):
     def reload_contacts(self):
         stored_contacts = self.contact_store.list_contacts(self.opened_list.list_id)
         self.displayed_contact_ids = [contact.contact_id for contact in stored_contacts]
+        extra_column_headers = []   # every header found in the contacts' imported columns, in first-seen order
+        for contact in stored_contacts:
+            for header in contact.custom_fields:
+                if header not in extra_column_headers:
+                    extra_column_headers.append(header)
         self.contacts_table.setUpdatesEnabled(False)
+        self.contacts_table.setColumnCount(FIXED_COLUMN_COUNT + len(extra_column_headers))
+        self.contacts_table.setHorizontalHeaderLabels(CONTACT_COLUMN_TITLES + extra_column_headers)
         self.contacts_table.setRowCount(len(stored_contacts))
         for row_index, contact in enumerate(stored_contacts):
             self.contacts_table.setItem(row_index, 0, build_position_item(row_index + 1))  # stays fixed when searching
             self.contacts_table.setItem(row_index, 1, QTableWidgetItem(contact.name))
             self.contacts_table.setItem(row_index, 2, QTableWidgetItem(contact.phone_number))
-            self.contacts_table.setItem(row_index, 3, QTableWidgetItem(format_custom_fields(contact.custom_fields)))
+            for extra_position, header in enumerate(extra_column_headers):
+                self.contacts_table.setItem(row_index, FIXED_COLUMN_COUNT + extra_position, QTableWidgetItem(contact.custom_fields.get(header, "")))
         self.contacts_table.setUpdatesEnabled(True)
         self.no_contacts_label.setVisible(not stored_contacts)
         self.contacts_table.setVisible(bool(stored_contacts))
@@ -241,8 +250,9 @@ class ContactsPage(QWidget):
         search_text = self.search_input.text().strip().lower()
         visible_count = 0
         for row_index in range(self.contacts_table.rowCount()):
-            row_text = (
-                self.contacts_table.item(row_index, 1).text() + " " + self.contacts_table.item(row_index, 2).text()
+            row_text = " ".join(
+                (self.contacts_table.item(row_index, column_index) or QTableWidgetItem("")).text()
+                for column_index in range(1, self.contacts_table.columnCount())
             ).lower()
             is_match = search_text in row_text
             self.contacts_table.setRowHidden(row_index, not is_match)

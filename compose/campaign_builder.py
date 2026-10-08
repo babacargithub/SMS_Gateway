@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 
 from common.french_labels import format_custom_fields
-from common.message_template import find_used_variables, render_final_message_text
+from common.message_template import EXTRA_COLUMN_NAMES, find_used_variables, render_final_message_text
 from common.sms_encoding import plan_sms, characters_forcing_unicode
 
 
@@ -34,11 +34,30 @@ class CampaignDraft:
 
 
 def contact_variable_values(contact):
+    column_values = getattr(contact, "column_values", None) or {}
+    extra_column_values = {column_name: column_values.get(column_name, "") for column_name in EXTRA_COLUMN_NAMES}
     return {
         "nom": contact.name,
         "telephone": contact.phone_number,
         "details": format_custom_fields(contact.custom_fields, separator=", "),
+        **extra_column_values,
     }
+
+
+def sample_extra_column_values(contacts_with_list_names, samples_per_column=3):
+    """For the preview in the Composer: {"col1": ["Dakar", "Thiès", …]} with a few distinct values, only for the
+    columns that hold data in at least one contact (in column order)."""
+    samples_by_column = {}
+    for _list_name, contact in contacts_with_list_names:
+        column_values = getattr(contact, "column_values", None) or {}
+        for column_name in EXTRA_COLUMN_NAMES:
+            column_value = column_values.get(column_name, "")
+            if not column_value:
+                continue
+            samples = samples_by_column.setdefault(column_name, [])
+            if column_value not in samples and len(samples) < samples_per_column:
+                samples.append(column_value)
+    return {column_name: samples_by_column[column_name] for column_name in EXTRA_COLUMN_NAMES if column_name in samples_by_column}
 
 
 MAX_REPORTED_CHARACTERS_FORCING_UNICODE = 8

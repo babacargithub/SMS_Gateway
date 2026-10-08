@@ -4,7 +4,7 @@ Every queued message keeps the values of its variables ({nom}, {téléphone}, {d
 rendered again for each message: « Bonjour {nom} » can become « Bonjour M. {nom} » or just « Bonjour. »."""
 from dataclasses import dataclass, field
 
-from common.message_template import VARIABLE_LABELS, find_unknown_variables, render_final_message_text
+from common.message_template import POSSIBLE_VARIABLES_DESCRIPTION, find_unknown_variables, find_used_variables, render_final_message_text
 from common.sms_encoding import MAX_PARTS_PER_MESSAGE, plan_sms
 
 
@@ -18,7 +18,7 @@ class EditableMessage:
 class BatchEditPlan:
     new_text_by_message_id: dict = field(default_factory=dict)
     rebuilt_count: int = 0
-    legacy_count: int = 0          # messages queued before variables were kept: left as they are
+    legacy_count: int = 0          # messages that lack a value this text needs (queued before variables were kept, or before {col1}…): left as they are
     empty_message_count: int = 0
     too_long_count: int = 0
     total_sms_count: int = 0
@@ -33,7 +33,7 @@ class BatchEditPlan:
             return "Le message est vide."
         if self.unknown_variables:
             return ("Variable inconnue : " + ", ".join("{" + name + "}" for name in self.unknown_variables)
-                    + ". Variables possibles : " + ", ".join(VARIABLE_LABELS.values()) + ".")
+                    + ". Variables possibles : " + POSSIBLE_VARIABLES_DESCRIPTION + ".")
         if self.empty_message_count:
             return f"{self.empty_message_count} message(s) seraient vides avec ce texte."
         if self.too_long_count:
@@ -46,8 +46,10 @@ def plan_batch_edit(template_text, editable_messages, simplify_to_7_bit=False):
         template_is_empty=not template_text.strip(),
         unknown_variables=find_unknown_variables(template_text),
     )
+    used_variables = find_used_variables(template_text)
     for editable_message in editable_messages:
-        if not editable_message.variable_values:
+        # a message queued before {col1}… existed has no such value: rendering it would leave « {col1} » in the SMS
+        if not editable_message.variable_values or not used_variables <= set(editable_message.variable_values):
             batch_edit_plan.legacy_count += 1
             continue
         new_message_text = render_final_message_text(template_text, editable_message.variable_values, simplify_to_7_bit)

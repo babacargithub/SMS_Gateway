@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from common.message_template import MAX_EXTRA_COLUMNS
 from common.sms_text import normalize_senegal_number
 
 EXCEL_EXTENSIONS = (".xlsx", ".xlsm")
@@ -19,7 +20,8 @@ ROWS_SAMPLED_TO_GUESS_PHONE_COLUMN = 200
 class ParsedContact:
     name: str
     phone_number: str
-    custom_fields: dict = field(default_factory=dict)
+    custom_fields: dict = field(default_factory=dict)    # every other column of the file: header -> value (shown as {détails})
+    column_values: dict = field(default_factory=dict)    # the chosen extra columns: "col1" -> value (the {col1} … {col10} variables)
 
 
 @dataclass
@@ -118,7 +120,18 @@ def guess_name_column(headers, phone_column_index):
     return find_column_by_header_hint(headers, NAME_HEADER_HINTS, excluded_column_index=phone_column_index)
 
 
-def build_import_plan(headers, data_rows, phone_column_index, name_column_index=None):
+def guess_extra_column_indexes(headers, phone_column_index, name_column_index):
+    """Default for {col1} … {col10}: the remaining columns of the file, in order (None = column not used)."""
+    remaining_column_indexes = [
+        column_index for column_index in range(len(headers)) if column_index not in (phone_column_index, name_column_index)
+    ]
+    chosen_indexes = remaining_column_indexes[:MAX_EXTRA_COLUMNS]
+    return chosen_indexes + [None] * (MAX_EXTRA_COLUMNS - len(chosen_indexes))
+
+
+def build_import_plan(headers, data_rows, phone_column_index, name_column_index=None, extra_column_indexes=None):
+    """`extra_column_indexes`: file column feeding {col1}, {col2}, … in that order (None entries are skipped)."""
+    extra_column_indexes = (extra_column_indexes or [])[:MAX_EXTRA_COLUMNS]
     import_plan = ImportPlan()
     phone_numbers_already_seen = set()
     for row_position, row in enumerate(data_rows):
@@ -140,11 +153,17 @@ def build_import_plan(headers, data_rows, phone_column_index, name_column_index=
             for column_index, cell_text in enumerate(row)
             if cell_text and column_index not in (phone_column_index, name_column_index)
         }
+        column_values = {
+            f"col{extra_position}": row[column_index]
+            for extra_position, column_index in enumerate(extra_column_indexes, start=1)
+            if column_index is not None and row[column_index]
+        }
         import_plan.valid_contacts.append(
             ParsedContact(
                 name=row[name_column_index] if name_column_index is not None else "",
                 phone_number=normalized_phone_number,
                 custom_fields=custom_fields,
+                column_values=column_values,
             )
         )
     return import_plan
