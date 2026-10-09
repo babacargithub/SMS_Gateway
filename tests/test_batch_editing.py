@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from common.message_template import EXTRA_VARIABLE_NAMES
 from compose.campaign_builder import build_campaign_draft
 from outbox import outbox_store
 from outbox.outbox_store import BatchEditRejected, OutboxStore
@@ -39,7 +40,7 @@ class BatchEditingTest(unittest.TestCase):
         with sqlite3.connect(self.database_path) as connection:
             stored = json.loads(connection.execute(
                 "SELECT variable_values FROM messages WHERE phone_number = '+221773300853'").fetchone()[0])
-        extra_columns_left_empty = {f"col{n}": "" for n in range(1, 11)}
+        extra_columns_left_empty = {name: "" for name in EXTRA_VARIABLE_NAMES}
         self.assertEqual(stored, {"nom": "Babacar", "telephone": "+221773300853", "details": "Ville : Dakar", **extra_columns_left_empty})
 
     def test_batch_keeps_its_template_and_used_variables(self):

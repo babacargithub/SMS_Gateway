@@ -26,7 +26,10 @@ from common.french_labels import format_contact_count, format_french_date
 from contacts.contact_store import ListNameAlreadyExists
 from common.table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS, build_position_item
 from common.icons import EDIT_ICON_SHAPES, TRASH_ICON_SHAPES, build_colored_icon
+from contacts.choose_destination_list_dialog import ChooseDestinationListDialog
+from contacts.globe_contact_mapping import GLOBE_SOURCE_NAME, build_globe_import_plan, describe_import_result, suggest_list_name
 from contacts.import_contacts_dialog import ImportContactsDialog
+from globe_transports.globe_selection_dialog import GlobeSelectionDialog
 
 LIST_COLUMN_TITLES = [POSITION_COLUMN_TITLE, "Liste", "Contacts", "Créée le", "Actions"]
 ACTIONS_COLUMN = 4
@@ -81,6 +84,9 @@ class ContactsPage(QWidget):
         self.import_button.clicked.connect(self.start_import)
         toolbar_layout = QHBoxLayout()
         toolbar_layout.addWidget(self.import_button)
+        self.globe_import_button = QPushButton("Importer depuis Globe Transports...")
+        self.globe_import_button.clicked.connect(self.start_globe_transports_import)
+        toolbar_layout.addWidget(self.globe_import_button)
         toolbar_layout.addStretch()
 
         self.lists_table = QTableWidget(0, len(LIST_COLUMN_TITLES))
@@ -304,17 +310,11 @@ class ContactsPage(QWidget):
         if import_dialog.exec() != ImportContactsDialog.Accepted:
             return
 
-        valid_contacts = import_dialog.import_plan.valid_contacts
         try:
-            if import_dialog.chosen_new_list_name():
-                target_list_id, inserted_count, skipped_count = self.contact_store.import_into_new_list(
-                    import_dialog.chosen_new_list_name(), valid_contacts, file_name
-                )
-            else:
-                target_list_id = import_dialog.chosen_existing_list_id()
-                inserted_count, skipped_count = self.contact_store.import_into_existing_list(
-                    target_list_id, valid_contacts, file_name
-                )
+            target_list_id, inserted_count, skipped_count = self.save_contacts_in_chosen_list(
+                import_dialog.import_plan.valid_contacts, import_dialog.chosen_new_list_name(),
+                import_dialog.chosen_existing_list_id(), file_name,
+            )
         except ListNameAlreadyExists:
             QMessageBox.warning(self, "La liste existe déjà", "Une liste portant ce nom vient d'être créée. Rien n'a été importé.")
             return
@@ -327,5 +327,58 @@ class ContactsPage(QWidget):
             "Import terminé",
             f"{inserted_count} contact(s) ajouté(s) à la liste « {target_list.name} ».\n"
             f"{skipped_count} ignoré(s) car le numéro est déjà dans cette liste.",
+        )
+        self.open_list(target_list)
+
+    def save_contacts_in_chosen_list(self, parsed_contacts, new_list_name, existing_list_id, source_name):
+        """The one place that writes imported contacts (file or Globe Transports): a new list or an existing one, numbers already
+        in the list skipped. Returns (list id, inserted count, skipped count); raises ListNameAlreadyExists."""
+        if new_list_name:
+            return self.contact_store.import_into_new_list(new_list_name, parsed_contacts, source_name)
+        inserted_count, skipped_count = self.contact_store.import_into_existing_list(existing_list_id, parsed_contacts, source_name)
+        return existing_list_id, inserted_count, skipped_count
+
+    def start_globe_transports_import(self):
+        selection_dialog = GlobeSelectionDialog(self)
+        if selection_dialog.exec() != GlobeSelectionDialog.Accepted:
+            return
+        import_plan = build_globe_import_plan(selection_dialog.fetched_bookings)
+        if not import_plan.valid_contacts:
+            QMessageBox.warning(
+                self, "Rien à importer",
+                "Aucune réservation n'a de numéro valide : " + describe_import_result(0, import_plan.duplicate_count, import_plan.invalid_phone_count) + ".",
+            )
+            return
+        details = [text for text in (
+            f"{import_plan.duplicate_count} doublon(s) ignoré(s)" if import_plan.duplicate_count else "",
+            f"{import_plan.invalid_phone_count} sans numéro valide" if import_plan.invalid_phone_count else "",
+        ) if text]
+        destination_dialog = ChooseDestinationListDialog(
+            "Importer depuis Globe Transports",
+            f"<b>{format_contact_count(len(import_plan.valid_contacts))}</b> à importer"
+            + (" (" + ", ".join(details) + ")" if details else "") + ".",
+            len(import_plan.valid_contacts),
+            self.contact_store.list_contact_lists(),
+            self.contact_store.list_name_exists,
+            default_list_name=suggest_list_name(import_plan),
+            parent=self,
+        )
+        if destination_dialog.exec() != ChooseDestinationListDialog.Accepted:
+            return
+        try:
+            target_list_id, inserted_count, skipped_count = self.save_contacts_in_chosen_list(
+                import_plan.valid_contacts, destination_dialog.chosen_new_list_name(),
+                destination_dialog.chosen_existing_list_id(), GLOBE_SOURCE_NAME,
+            )
+        except ListNameAlreadyExists:
+            QMessageBox.warning(self, "La liste existe déjà", "Une liste portant ce nom vient d'être créée. Rien n'a été importé.")
+            return
+        target_list = next(
+            contact_list for contact_list in self.contact_store.list_contact_lists() if contact_list.list_id == target_list_id
+        )
+        QMessageBox.information(
+            self, "Import terminé",
+            describe_import_result(inserted_count, import_plan.duplicate_count + skipped_count, import_plan.invalid_phone_count)
+            + f".\nListe : « {target_list.name} ».",
         )
         self.open_list(target_list)

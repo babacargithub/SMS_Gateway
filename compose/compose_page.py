@@ -20,7 +20,7 @@ from compose.campaign_builder import CampaignDraft, build_campaign_draft, sample
 from common.french_labels import choose_singular_or_plural, format_contact_count, format_message_count, format_number, format_sms_count
 from compose.sms_cost_estimate import describe_estimated_costs
 from compose.typed_recipient import TYPED_NUMBER_LIST_NAME, build_typed_recipient_rows
-from common.message_template import BASE_VARIABLE_LABELS, POSSIBLE_VARIABLES_DESCRIPTION, VARIABLE_LABELS, find_unknown_variables
+from common.message_template import BASE_VARIABLE_LABELS, POSSIBLE_VARIABLES_DESCRIPTION, VARIABLE_LABELS, describe_variable, find_unknown_variables
 from common.sms_preferences import (
     SIMPLIFY_CHECKBOX_LABEL,
     SIMPLIFY_CHECKBOX_TOOLTIP,
@@ -170,6 +170,7 @@ class ComposePage(QWidget):
 
     def build_variable_button(self, variable_label):
         variable_button = QPushButton(variable_label)
+        variable_button.setToolTip(describe_variable(variable_label.strip("{}")))
         variable_button.clicked.connect(partial(self.insert_variable, variable_label))
         return variable_button
 
@@ -288,7 +289,7 @@ class ComposePage(QWidget):
                 self.extra_column_buttons_layout.addWidget(self.build_variable_button(VARIABLE_LABELS[column_name]))
         self.extra_column_samples = new_samples
         preview_lines = [
-            f"{VARIABLE_LABELS[column_name]} : " + "  ·  ".join(samples) + ("…" if len(self.recipient_rows) > len(samples) else "")
+            f"{VARIABLE_LABELS[column_name]}" + (f" ({describe_variable(column_name)})" if describe_variable(column_name) else "") + " : " + "  ·  ".join(samples) + ("…" if len(self.recipient_rows) > len(samples) else "")
             for column_name, samples in new_samples.items()
         ]
         self.extra_column_preview_label.setText("Exemples de valeurs :\n" + "\n".join(preview_lines) if preview_lines else "")

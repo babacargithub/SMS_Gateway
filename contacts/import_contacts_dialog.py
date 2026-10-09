@@ -6,9 +6,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QLabel,
-    QLineEdit,
     QPlainTextEdit,
-    QRadioButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -16,14 +14,13 @@ from PySide6.QtWidgets import (
 
 from common.french_labels import format_contact_count
 from common.message_template import EXTRA_COLUMN_NAMES
+from contacts.list_destination_picker import ListDestinationPicker
 from contacts.contact_import import build_import_plan, guess_extra_column_indexes, guess_name_column, guess_phone_column
 
 PREVIEW_ROW_COUNT = 5
 INVALID_ROWS_SHOWN = 15
 NO_NAME_COLUMN_LABEL = "(aucune)"
 EXTRA_COLUMN_ROWS = 5   # the ten {colN} choices are laid out in two blocks of five
-DEFAULT_TEXT_STYLE = "color: gray;"
-ERROR_TEXT_STYLE = "color: #c0392b;"
 
 
 class ImportContactsDialog(QDialog):
@@ -77,17 +74,10 @@ class ImportContactsDialog(QDialog):
             for column_index, cell_text in enumerate(row):
                 self.preview_table.setItem(row_index, column_index, QTableWidgetItem(cell_text))
 
-        self.new_list_radio = QRadioButton("Créer une nouvelle liste :")
-        self.new_list_name_input = QLineEdit(default_list_name)
-        self.new_list_name_input.setPlaceholderText("ex. Fidèles clients")
-        self.existing_list_radio = QRadioButton("Ajouter à une liste existante :")
-        self.existing_list_combo = QComboBox()
-        for contact_list in existing_lists:
-            self.existing_list_combo.addItem(f"{contact_list.name}  ({format_contact_count(contact_list.contact_count)})", contact_list.list_id)
-        self.existing_list_radio.setEnabled(bool(existing_lists))
-        self.existing_list_combo.setEnabled(False)
-        self.new_list_radio.setChecked(True)
-        self.list_name_problem_label = QLabel()
+        self.destination_picker = ListDestinationPicker(
+            existing_lists, list_name_exists, default_list_name,
+            existing_list_hint="Gardez les mêmes colonnes {col1} à {col10} que lors des imports précédents de cette liste.",
+        )
 
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
@@ -103,65 +93,33 @@ class ImportContactsDialog(QDialog):
         form_layout = QFormLayout()
         form_layout.addRow("Colonne du numéro de téléphone :", self.phone_column_combo)
         form_layout.addRow("Colonne du nom :", self.name_column_combo)
-        destination_layout = QFormLayout()
-        destination_layout.addRow(self.new_list_radio, self.new_list_name_input)
-        destination_layout.addRow("", self.list_name_problem_label)
-        destination_layout.addRow(self.existing_list_radio, self.existing_list_combo)
         dialog_layout = QVBoxLayout(self)
         dialog_layout.addLayout(form_layout)
         dialog_layout.addWidget(extra_columns_box)
         dialog_layout.addWidget(QLabel(f"Aperçu ({self.preview_table.rowCount()} premières lignes) :"))
         dialog_layout.addWidget(self.preview_table)
-        dialog_layout.addWidget(QLabel("<b>Liste de destination</b>"))
-        dialog_layout.addLayout(destination_layout)
+        dialog_layout.addWidget(self.destination_picker)
         dialog_layout.addWidget(self.summary_label)
         dialog_layout.addWidget(self.problem_rows_text)
         dialog_layout.addWidget(self.button_box)
 
         self.phone_column_combo.currentIndexChanged.connect(self.refresh_import_plan)
         self.name_column_combo.currentIndexChanged.connect(self.refresh_import_plan)
-        self.new_list_radio.toggled.connect(self.refresh_destination)
-        self.new_list_name_input.textChanged.connect(self.refresh_destination)
+        self.destination_picker.changed.connect(self.refresh_import_button)
         self.refresh_import_plan()
-        self.new_list_name_input.setFocus()
+        self.destination_picker.new_list_name_input.setFocus()
 
     def chosen_new_list_name(self):
-        """The new list's name, or None when adding to an existing list."""
-        return self.new_list_name_input.text().strip() if self.new_list_radio.isChecked() else None
+        return self.destination_picker.chosen_new_list_name()
 
     def chosen_existing_list_id(self):
-        return None if self.new_list_radio.isChecked() else self.existing_list_combo.currentData()
-
-    def destination_is_valid(self):
-        if not self.new_list_radio.isChecked():
-            return True
-        new_list_name = self.new_list_name_input.text().strip()
-        if not new_list_name:
-            self.list_name_problem_label.setText("Donnez un nom à la nouvelle liste.")
-        elif self.list_name_exists(new_list_name):
-            self.list_name_problem_label.setText(f"Une liste nommée « {new_list_name} » existe déjà. Choisissez un autre nom ou ajoutez-y les contacts.")
-        else:
-            self.list_name_problem_label.setText("")
-            return True
-        self.list_name_problem_label.setStyleSheet(ERROR_TEXT_STYLE)
-        return False
-
-    def refresh_destination(self):
-        is_new_list = self.new_list_radio.isChecked()
-        self.new_list_name_input.setEnabled(is_new_list)
-        self.existing_list_combo.setEnabled(not is_new_list)
-        if is_new_list:
-            self.destination_is_valid()
-        else:
-            self.list_name_problem_label.setStyleSheet(DEFAULT_TEXT_STYLE)
-            self.list_name_problem_label.setText("Gardez les mêmes colonnes {col1} à {col10} que lors des imports précédents de cette liste.")
-        self.refresh_import_button()
+        return self.destination_picker.chosen_existing_list_id()
 
     def refresh_import_button(self):
         valid_contact_count = len(self.import_plan.valid_contacts) if self.import_plan else 0
         import_button = self.button_box.button(QDialogButtonBox.Ok)
         import_button.setText(f"Importer {format_contact_count(valid_contact_count)}")
-        import_button.setEnabled(valid_contact_count > 0 and self.destination_is_valid())
+        import_button.setEnabled(valid_contact_count > 0 and self.destination_picker.is_valid())
 
     def refresh_import_plan(self):
         name_column_index = self.name_column_combo.currentIndex() - 1

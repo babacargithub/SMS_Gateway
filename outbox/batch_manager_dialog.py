@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from common.dialogs import ask_yes_no_defaulting_to_no
 from common.french_labels import MESSAGE_STATE_LABELS, format_french_datetime, format_message_count, format_number, format_sms_count
 from common.icons import TRASH_ICON_SHAPES, build_colored_icon
-from common.message_template import BASE_VARIABLE_LABELS, EXTRA_COLUMN_NAMES, VARIABLE_LABELS
+from common.message_template import BASE_VARIABLE_LABELS, EXTRA_VARIABLE_NAMES, VARIABLE_LABELS, describe_variable
 from common.sms_preferences import SIMPLIFY_CHECKBOX_LABEL, SIMPLIFY_CHECKBOX_TOOLTIP
 from outbox import outbox_store
 from outbox.batch_editing import plan_batch_edit
@@ -61,6 +61,7 @@ class BatchManagerDialog(QDialog):
         variable_buttons_layout.addWidget(QLabel("Insérer une variable :"))
         for variable_label in self.variable_labels_of_this_batch():
             variable_button = QPushButton(variable_label)
+            variable_button.setToolTip(describe_variable(variable_label.strip("{}")))
             variable_button.clicked.connect(partial(self.insert_variable, variable_label))
             variable_buttons_layout.addWidget(variable_button)
         variable_buttons_layout.addStretch()
@@ -165,9 +166,9 @@ class BatchManagerDialog(QDialog):
             variable_name
             for editable_message in self.outbox_store.list_editable_messages(self.campaign_id)
             for variable_name, variable_value in editable_message.variable_values.items()
-            if variable_name in EXTRA_COLUMN_NAMES and variable_value
+            if variable_name in EXTRA_VARIABLE_NAMES and variable_value
         }
-        return list(BASE_VARIABLE_LABELS.values()) + [VARIABLE_LABELS[name] for name in EXTRA_COLUMN_NAMES if name in columns_with_values]
+        return list(BASE_VARIABLE_LABELS.values()) + [VARIABLE_LABELS[name] for name in EXTRA_VARIABLE_NAMES if name in columns_with_values]
 
     def insert_variable(self, variable_label):
         self.template_input.insertPlainText(variable_label)

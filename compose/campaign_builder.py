@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 
 from common.french_labels import format_custom_fields
-from common.message_template import EXTRA_COLUMN_NAMES, find_used_variables, render_final_message_text
+from common.message_template import EXTRA_VARIABLE_NAMES, find_used_variables, render_final_message_text
 from common.sms_encoding import plan_sms, characters_forcing_unicode
 
 
@@ -35,7 +35,7 @@ class CampaignDraft:
 
 def contact_variable_values(contact):
     column_values = getattr(contact, "column_values", None) or {}
-    extra_column_values = {column_name: column_values.get(column_name, "") for column_name in EXTRA_COLUMN_NAMES}
+    extra_column_values = {variable_name: column_values.get(variable_name, "") for variable_name in EXTRA_VARIABLE_NAMES}
     return {
         "nom": contact.name,
         "telephone": contact.phone_number,
@@ -50,14 +50,14 @@ def sample_extra_column_values(contacts_with_list_names, samples_per_column=3):
     samples_by_column = {}
     for _list_name, contact in contacts_with_list_names:
         column_values = getattr(contact, "column_values", None) or {}
-        for column_name in EXTRA_COLUMN_NAMES:
+        for column_name in EXTRA_VARIABLE_NAMES:
             column_value = column_values.get(column_name, "")
             if not column_value:
                 continue
             samples = samples_by_column.setdefault(column_name, [])
             if column_value not in samples and len(samples) < samples_per_column:
                 samples.append(column_value)
-    return {column_name: samples_by_column[column_name] for column_name in EXTRA_COLUMN_NAMES if column_name in samples_by_column}
+    return {column_name: samples_by_column[column_name] for column_name in EXTRA_VARIABLE_NAMES if column_name in samples_by_column}
 
 
 MAX_REPORTED_CHARACTERS_FORCING_UNICODE = 8

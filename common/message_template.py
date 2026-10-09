@@ -1,7 +1,8 @@
 """Message templates with {variables}, filled in for each contact. No UI, no database.
 
 Supported variables: {nom}, {téléphone}, {détails} and {col1} … {col10} (the extra columns chosen when a contact file is
-imported). Case and accents are ignored, so {Nom}, {telephone} and {DÉTAILS} work too."""
+imported) and, for contacts fetched from Globe Transports, {point_dep}, {destination}, {agent_number}, {depart_name},
+{bus_name}, {seat_number}, {formatted_schedule}, {arret_bus}. Case and accents are ignored, so {Nom}, {telephone} and {DÉTAILS} work too."""
 import re
 import unicodedata
 
@@ -17,8 +18,30 @@ BASE_VARIABLE_LABELS = {
     "telephone": "{téléphone}",
     "details": "{détails}",
 }
-VARIABLE_LABELS = {**BASE_VARIABLE_LABELS, **{column_name: "{" + column_name + "}" for column_name in EXTRA_COLUMN_NAMES}}
-POSSIBLE_VARIABLES_DESCRIPTION = ", ".join(BASE_VARIABLE_LABELS.values()) + f", {{col1}} à {{col{MAX_EXTRA_COLUMNS}}}"
+# Named per-contact values filled by the Globe Transports import (kept next to {col1}… in `contacts.column_values`)
+# variable name -> French description (button tooltip, example values, column header in the contact list)
+NAMED_VARIABLE_DESCRIPTIONS = {
+    "point_dep": "Point de départ",
+    "destination": "Destination",
+    "agent_number": "Agence",
+    "depart_name": "Départ",
+    "bus_name": "Bus",
+    "seat_number": "Place",
+    "formatted_schedule": "Heure de rendez-vous",
+    "arret_bus": "Lieu de rendez-vous",
+}
+NAMED_EXTRA_VARIABLE_NAMES = list(NAMED_VARIABLE_DESCRIPTIONS)
+EXTRA_VARIABLE_NAMES = EXTRA_COLUMN_NAMES + NAMED_EXTRA_VARIABLE_NAMES   # every variable read from `column_values`
+VARIABLE_LABELS = {**BASE_VARIABLE_LABELS, **{variable_name: "{" + variable_name + "}" for variable_name in EXTRA_VARIABLE_NAMES}}
+POSSIBLE_VARIABLES_DESCRIPTION = (
+    ", ".join(BASE_VARIABLE_LABELS.values()) + f", {{col1}} à {{col{MAX_EXTRA_COLUMNS}}}, "
+    + ", ".join("{" + variable_name + "}" for variable_name in NAMED_EXTRA_VARIABLE_NAMES)
+)
+
+
+def describe_variable(variable_name):
+    """French meaning of a named variable (« Heure de rendez-vous »), or '' for the others."""
+    return NAMED_VARIABLE_DESCRIPTIONS.get(variable_name, "")
 
 
 def canonical_variable_name(raw_variable_name):
