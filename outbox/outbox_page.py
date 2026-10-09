@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from outbox import outbox_store
 from common.dialogs import ask_yes_no_defaulting_to_no
+from common.message_detail_panel import MessageDetailPanel
 from common.french_labels import MESSAGE_STATE_LABELS, format_french_datetime, format_message_count, format_number
 from outbox.batch_manager_dialog import BatchManagerDialog
 from outbox.batches_panel import BatchesPanel
@@ -237,6 +238,7 @@ class OutboxPage(QWidget):
         self.messages_table.setColumnWidth(2, 170)
         self.messages_table.setColumnWidth(5, 150)
 
+        self.message_detail_panel = MessageDetailPanel()
         self.empty_label = QLabel("Aucun message à envoyer. Les messages envoyés sont dans l'Historique.")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet("font-size: 16px; color: gray;")
@@ -246,8 +248,9 @@ class OutboxPage(QWidget):
         page_layout.addLayout(controls_layout)
         page_layout.addLayout(summary_layout)
         page_layout.addLayout(toolbar_layout)
-        page_layout.addWidget(self.messages_table)
+        page_layout.addWidget(self.messages_table, stretch=1)
         page_layout.addWidget(self.empty_label)
+        page_layout.addWidget(self.message_detail_panel)
 
         self.state_filter_combo.currentIndexChanged.connect(self.reload)
         self.clear_waiting_button.clicked.connect(self.clear_waiting_messages)
@@ -298,6 +301,7 @@ class OutboxPage(QWidget):
         self.selection_label.setText(f"{format_message_count(selected_count)} sélectionné{'s' if selected_count > 1 else ''}" if selected_count else "")
         self.delete_selection_button.setEnabled(selected_count > 0)
         self.select_all_button.setEnabled(self.table_model.rowCount() > 0)
+        self.message_detail_panel.show_selected_messages(self.selected_messages())
 
     def delete_selected_messages(self):
         selected = self.selected_messages()

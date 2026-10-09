@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from common.dialogs import ask_yes_no_defaulting_to_no
 from common.french_labels import format_french_datetime, format_message_count, format_number
+from common.message_detail_panel import MessageDetailPanel
 from common.icons import TRASH_ICON_SHAPES, build_colored_icon
 from outbox.outbox_store import OutboxStore
 from common.table_helpers import POSITION_COLUMN_TITLE, POSITION_COLUMN_WIDTH_PIXELS
@@ -102,14 +103,16 @@ class HistoryPage(QWidget):
         self.messages_table.setColumnWidth(RECIPIENT_COLUMN, 170)
         self.messages_table.setColumnWidth(LIST_COLUMN, 150)
 
+        self.message_detail_panel = MessageDetailPanel()
         self.empty_label = QLabel("Aucun message envoyé pour l'instant.")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet("font-size: 16px; color: gray;")
 
         page_layout = QVBoxLayout(self)
         page_layout.addLayout(toolbar_layout)
-        page_layout.addWidget(self.messages_table)
+        page_layout.addWidget(self.messages_table, stretch=1)
         page_layout.addWidget(self.empty_label)
+        page_layout.addWidget(self.message_detail_panel)
 
         self.search_field.textChanged.connect(self.reload)
         self.select_all_button.clicked.connect(self.messages_table.selectAll)
@@ -149,6 +152,8 @@ class HistoryPage(QWidget):
         self.summary_label.setText(summary_text)
         self.delete_button.setEnabled(selected_count > 0)
         self.select_all_button.setEnabled(total_count > 0)
+        selected_rows = sorted({index.row() for index in self.messages_table.selectionModel().selectedRows()})
+        self.message_detail_panel.show_selected_messages([self.table_model.sent_messages[row] for row in selected_rows])
 
     def delete_selected_messages(self):
         selected_rows = sorted({index.row() for index in self.messages_table.selectionModel().selectedRows()})
