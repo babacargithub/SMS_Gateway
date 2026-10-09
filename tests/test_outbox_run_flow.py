@@ -29,13 +29,13 @@ class OutboxRunFlowTest(unittest.TestCase):
         self.assertEqual(len(self.store.list_sent_messages()), 1)
         self.assertEqual(self.store.count_by_state()[outbox_store.SENT], 0)
 
-    def test_failed_come_back_first_unknown_never(self):
+    def test_failed_and_unknown_come_back_first(self):
         failed_message = self.finish_next(outbox_store.FAILED)
         unknown_message = self.finish_next(outbox_store.UNKNOWN)
-        self.assertEqual(self.store.requeue_failed_messages(), 1)
+        self.assertEqual(self.store.requeue_failed_messages(), 2)
         self.assertEqual(self.store.claim_next_waiting_message().message_id, failed_message.message_id)
-        self.assertEqual(self.store.count_by_state()[outbox_store.UNKNOWN], 1)
-        self.assertNotEqual(unknown_message.message_id, failed_message.message_id)
+        self.assertEqual(self.store.claim_next_waiting_message().message_id, unknown_message.message_id)
+        self.assertEqual(self.store.count_by_state()[outbox_store.UNKNOWN], 0)
 
 
 if __name__ == "__main__":

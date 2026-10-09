@@ -153,6 +153,7 @@ class OutboxPage(QWidget):
         self.run_state = IDLE
         self.waiting_count = 0
         self.failed_count = 0
+        self.unknown_count = 0
         self.last_user_action_timer = QElapsedTimer()  # restarted by any manual scroll / click / key on the list
         self.paused_reason = ""  # why the worker paused itself (e.g. no dongle), shown instead of « En pause »
 
@@ -273,6 +274,7 @@ class OutboxPage(QWidget):
             count_label.setText(f"{MESSAGE_STATE_LABELS[state]} : {format_number(state_counts[state])}")
         self.waiting_count = state_counts[outbox_store.WAITING]
         self.failed_count = state_counts[outbox_store.FAILED]
+        self.unknown_count = state_counts[outbox_store.UNKNOWN]
         self.batches_panel.show_batches(self.outbox_store.list_batches())
 
         self.table_model.shown_states = self.states_to_show()
@@ -341,7 +343,7 @@ class OutboxPage(QWidget):
     def apply_run_state(self):
         """Enable only the controls that make sense right now."""
         is_idle = self.run_state == IDLE
-        self.send_button.setEnabled(self.run_state == PAUSED or (is_idle and self.waiting_count + self.failed_count > 0))
+        self.send_button.setEnabled(self.run_state == PAUSED or (is_idle and self.waiting_count + self.failed_count + self.unknown_count > 0))
         self.send_button.setText(" Reprendre" if self.run_state == PAUSED else " Envoyer")
         self.pause_button.setEnabled(self.run_state == RUNNING)
         self.stop_button.setEnabled(self.run_state in (RUNNING, PAUSED))
@@ -358,7 +360,7 @@ class OutboxPage(QWidget):
             self.reload()
             self.sending_worker.resume()
             self.run_state = RUNNING
-        elif self.run_state == IDLE and self.waiting_count + self.failed_count > 0:
+        elif self.run_state == IDLE and self.waiting_count + self.failed_count + self.unknown_count > 0:
             campaign_sender, sending_method_name = self.choose_campaign_sender()
             if campaign_sender is None or not self.confirm_real_sending(sending_method_name):
                 return
@@ -466,7 +468,7 @@ class OutboxPage(QWidget):
         """Ask « SIM or gateway ? ». Returns (sender, French name of the method), or (None, None) if cancelled."""
         if not self.gateways:
             return self.message_sender, "la SIM"
-        method_dialog = SendingMethodDialog(self, self.gateways, self.waiting_count + self.failed_count)
+        method_dialog = SendingMethodDialog(self, self.gateways, self.waiting_count + self.failed_count + self.unknown_count)
         if method_dialog.exec() != SendingMethodDialog.Accepted:
             return None, None
         if method_dialog.chosen_method_key == SIM_METHOD_KEY:
@@ -476,10 +478,11 @@ class OutboxPage(QWidget):
 
     def confirm_real_sending(self, sending_method_name="la SIM"):
         average_gap_seconds = sum(self.selected_sending_speed().gap_seconds_range) / 2 + SEND_DURATION_SECONDS
-        messages_to_send_count = self.waiting_count + self.failed_count
+        messages_to_send_count = self.waiting_count + self.failed_count + self.unknown_count
         estimated_minutes = max(1, round(messages_to_send_count * average_gap_seconds / 60))
         failed_note = (
-            f"Dont {format_message_count(self.failed_count)} en échec, qui seront renvoyés en premier.\n\n" if self.failed_count else ""
+            f"Dont {format_message_count(self.failed_count + self.unknown_count)} en échec ou au résultat incertain (?), "
+            "qui seront renvoyés en premier.\n\n" if self.failed_count + self.unknown_count else ""
         )
         return ask_yes_no_defaulting_to_no(
             self,
@@ -520,6 +523,7 @@ class OutboxPage(QWidget):
             count_label.setText(f"{MESSAGE_STATE_LABELS[state]} : {format_number(state_counts[state])}")
         self.waiting_count = state_counts[outbox_store.WAITING]
         self.failed_count = state_counts[outbox_store.FAILED]
+        self.unknown_count = state_counts[outbox_store.UNKNOWN]
         self.batches_panel.show_batches(self.outbox_store.list_batches())
 
     def open_batch_manager(self, campaign_id):

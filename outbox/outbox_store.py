@@ -349,13 +349,13 @@ class OutboxStore:
             )
 
     def requeue_failed_messages(self):
-        """FAILED means the network or dongle certainly refused the message, so it is safe to try again: they go back to
-        WAITING and, having the oldest ids, are sent first. UNKNOWN ones are never touched (they may have been delivered).
-        Returns how many were requeued."""
+        """FAILED (certainly refused) and UNKNOWN (« ? », outcome unclear) messages go back to WAITING and, having the
+        oldest ids, are sent first. Retrying an UNKNOWN one can duplicate it if it was in fact delivered: this is the
+        owner's explicit choice, and it only happens when the owner presses Envoyer/Reprendre. Returns how many."""
         with DatabaseTransaction(self.database_path) as connection:
             return connection.execute(
-                "UPDATE messages SET state = ?, error_detail = '', updated_at = CURRENT_TIMESTAMP WHERE state = ?",
-                (WAITING, FAILED),
+                "UPDATE messages SET state = ?, error_detail = '', updated_at = CURRENT_TIMESTAMP WHERE state IN (?, ?)",
+                (WAITING, FAILED, UNKNOWN),
             ).rowcount
 
     def archive_sent_messages(self):
