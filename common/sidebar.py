@@ -2,6 +2,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QStyledItemDelegate
 
+from common.french_labels import format_number
 from common.icons import build_colored_icon
 
 # Stroke-style icons (24x24 grid). Each section gets its own color.
@@ -48,6 +49,7 @@ SIDEBAR_SECTIONS = [
 
 SIDEBAR_SECTION_NAMES = [section_name for section_name, _, _ in SIDEBAR_SECTIONS]
 INBOX_SECTION_NAME = "Réception"
+OUTBOX_SECTION_NAME = "Boîte d'envoi"
 
 SEPARATOR_COLOR = QColor(128, 128, 128, 64)
 SEPARATOR_INSET_LEFT_PIXELS = 14
@@ -117,3 +119,8 @@ class Sidebar(QListWidget):
         item_font = inbox_item.font()
         item_font.setBold(unread_count > 0)
         inbox_item.setFont(item_font)
+
+    def show_waiting_outbox_count(self, waiting_count):
+        """"Boîte d'envoi (120)" while messages are waiting to be sent."""
+        outbox_item = self.item(SIDEBAR_SECTION_NAMES.index(OUTBOX_SECTION_NAME))
+        outbox_item.setText(f"{OUTBOX_SECTION_NAME} ({format_number(waiting_count)})" if waiting_count else OUTBOX_SECTION_NAME)

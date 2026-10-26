@@ -98,6 +98,8 @@ class MainWindow(QMainWindow):
         self.dongle_monitor.inbox_messages_received.connect(self.handle_new_inbox_messages)
         self.inbox_page.unread_count_changed.connect(self.sidebar_list.show_unread_inbox_count)
         self.sidebar_list.show_unread_inbox_count(self.inbox_store.count_unread())
+        self.outbox_page.waiting_count_changed.connect(self.sidebar_list.show_waiting_outbox_count)
+        self.sidebar_list.show_waiting_outbox_count(self.outbox_page.waiting_count)
         self.dongle_monitor.start()
 
         self.sidebar_list.currentRowChanged.connect(self.content_stack.setCurrentIndex)

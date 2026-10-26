@@ -141,6 +141,7 @@ class OutboxTableModel(QAbstractTableModel):
 class OutboxPage(QWidget):
     """The queue: every message of every launched campaign, with its state."""
 
+    waiting_count_changed = Signal(int)  # messages still WAITING, for the sidebar
     reply_delivery_postponed = Signal(str)  # why a reply could not be sent now (it stays first in the queue)
 
     def __init__(self, outbox_store_instance, message_sender, gateways=()):
@@ -276,6 +277,7 @@ class OutboxPage(QWidget):
         for state, count_label in self.state_count_labels.items():
             count_label.setText(f"{MESSAGE_STATE_LABELS[state]} : {format_number(state_counts[state])}")
         self.waiting_count = state_counts[outbox_store.WAITING]
+        self.waiting_count_changed.emit(self.waiting_count)
         self.failed_count = state_counts[outbox_store.FAILED]
         self.unknown_count = state_counts[outbox_store.UNKNOWN]
         self.batches_panel.show_batches(self.outbox_store.list_batches())
@@ -526,6 +528,7 @@ class OutboxPage(QWidget):
         for state, count_label in self.state_count_labels.items():
             count_label.setText(f"{MESSAGE_STATE_LABELS[state]} : {format_number(state_counts[state])}")
         self.waiting_count = state_counts[outbox_store.WAITING]
+        self.waiting_count_changed.emit(self.waiting_count)
         self.failed_count = state_counts[outbox_store.FAILED]
         self.unknown_count = state_counts[outbox_store.UNKNOWN]
         self.batches_panel.show_batches(self.outbox_store.list_batches())
