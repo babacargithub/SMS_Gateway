@@ -12,7 +12,7 @@ import time
 
 from PySide6.QtCore import QThread, Signal
 
-from common.keep_awake import keep_mac_awake
+from common.keep_awake import keep_computer_awake
 from outbox import outbox_store
 from outbox.message_sender import DONGLE_UNAVAILABLE
 
@@ -68,7 +68,7 @@ class SendingWorker(QThread):
             self.stop_requested.wait(min(remaining_seconds, GAP_POLL_SECONDS))
 
     def run(self):
-        with keep_mac_awake("SMS Gateway : envoi de messages en cours"):
+        with keep_computer_awake("SMS Gateway : envoi de messages en cours"):
             self._send_waiting_messages()
 
     def _send_waiting_messages(self):

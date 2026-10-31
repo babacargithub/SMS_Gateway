@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import usb.core
 from PySide6.QtCore import QThread, Signal
 
+from common.platform_support import IS_WINDOWS
 from devices import dongle
 from devices.dongle import DongleConnection, DongleStatus
 from inbox.sms_assembler import assemble_received_messages
@@ -426,6 +427,20 @@ class DongleMonitor(QThread):
     def _handle_cdrom(self, usb_location, cdrom_device):
         """Ask the root helper (mode_switcher/) to switch the dongle, retrying every few seconds, and report progress."""
         first_seen_at = self.cdrom_first_seen_at.setdefault(usb_location, time.time())
+        if IS_WINDOWS:
+            # Verified on the Windows PC: the dongle switches itself to modem mode a few seconds after being plugged in
+            # (no helper, no root). If it stays a CD-ROM, only a replug helps.
+            seconds_since_first_seen = time.time() - first_seen_at
+            self.current_statuses[usb_location] = (
+                DongleStatus(usb_location, dongle.STATE_DETECTED)
+                if seconds_since_first_seen < MODE_SWITCHER_GRACE_SECONDS
+                else DongleStatus(
+                    usb_location,
+                    dongle.STATE_ERROR,
+                    error_message="Le dongle est resté en mode CD-ROM : débranchez-le puis rebranchez-le",
+                )
+            )
+            return
         if not dongle.is_mode_switch_helper_installed():
             self.current_statuses[usb_location] = DongleStatus(
                 usb_location,

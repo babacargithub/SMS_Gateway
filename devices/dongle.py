@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from common.platform_support import IS_WINDOWS
 from common.sms_encoding import MAX_PARTS_PER_MESSAGE, build_submit_pdus, is_plain_single_sms, plan_sms
 from inbox.received_sms_parser import parse_pdu_list_reply
 from sim.ussd_codec import decode_ussd_reply, encode_ussd_request
@@ -19,6 +20,9 @@ CDROM_PRODUCT_ID = 0x14FE
 MODEM_PRODUCT_ID = 0x151D
 LIBUSB_LIBRARY_PATH = "/opt/homebrew/lib/libusb-1.0.dylib"
 VENDOR_SPECIFIC_INTERFACE_CLASS = 0xFF
+# On Windows an interface without the WinUSB driver cannot be claimed: libusb answers LIBUSB_ERROR_NOT_SUPPORTED, which
+# pyusb raises as NotImplementedError (not USBError). Such an interface is simply skipped, like a busy one on macOS.
+INTERFACE_NOT_CLAIMABLE_ERRORS = (usb.core.USBError, NotImplementedError)
 
 MODE_SWITCH_HELPER_PYTHON = "/usr/local/libexec/sms-gateway/venv/bin/python"
 MODE_SWITCH_HELPER_SCRIPT = "/usr/local/libexec/sms-gateway/dongle_mode_switcher.py"
@@ -97,10 +101,22 @@ class DongleStatus:
     error_message: Optional[str] = None
 
 
+def _libusb_library_path():
+    """macOS: Homebrew's libusb. Windows: the DLL bundled with the `libusb-package` pip package (None if missing, then
+    pyusb searches the PATH). On Windows the AT interface needs the WinUSB driver: scripts/windows/install_winusb_driver.ps1."""
+    if IS_WINDOWS:
+        try:
+            import libusb_package
+            return libusb_package.get_library_path()
+        except ImportError:
+            return None
+    return LIBUSB_LIBRARY_PATH
+
+
 def load_usb_backend():
-    return usb.backend.libusb1.get_backend(
-        find_library=lambda _: LIBUSB_LIBRARY_PATH
-    ) or usb.backend.libusb1.get_backend()
+    library_path = _libusb_library_path()
+    usb_backend = usb.backend.libusb1.get_backend(find_library=lambda _: library_path) if library_path else None
+    return usb_backend or usb.backend.libusb1.get_backend()
 
 
 def usb_location_of(usb_device):
@@ -182,7 +198,7 @@ class DongleConnection:
                 continue
             try:
                 usb.util.claim_interface(self.usb_device, interface.bInterfaceNumber)
-            except usb.core.USBError:
+            except INTERFACE_NOT_CLAIMABLE_ERRORS:
                 continue
             self.bulk_out_endpoint, self.bulk_in_endpoint = out_endpoint, in_endpoint
             self.claimed_interface_number = interface.bInterfaceNumber
@@ -209,7 +225,7 @@ class DongleConnection:
                 continue
             try:
                 usb.util.claim_interface(self.usb_device, interface.bInterfaceNumber)
-            except usb.core.USBError:
+            except INTERFACE_NOT_CLAIMABLE_ERRORS:
                 continue
             try:
                 out_endpoint.write(b"AT\r", timeout=1000)

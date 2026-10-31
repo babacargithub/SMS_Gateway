@@ -1,14 +1,11 @@
-"""Orange SMS credentials, kept in the macOS Keychain (one generic-password item holding a small JSON blob).
-
-The `security` command line tool is used so no extra dependency is needed. Nothing is written to disk in clear text."""
+"""Orange SMS credentials, kept by the operating system's secret store (macOS Keychain or Windows Credential Manager,
+see `common/secret_store.py`) as one item holding a small JSON blob. Nothing is written to disk in clear text."""
 import json
-import subprocess
 from dataclasses import asdict, dataclass
 
-KEYCHAIN_SERVICE_NAME = "SMS Gateway"
+from common.secret_store import read_secret, write_secret
+
 ORANGE_KEYCHAIN_ACCOUNT_NAME = "orange_sms_credentials"
-KEYCHAIN_COMMAND_TIMEOUT_SECONDS = 10
-KEYCHAIN_ITEM_NOT_FOUND_EXIT_CODE = 44
 
 
 @dataclass
@@ -24,31 +21,15 @@ class OrangeSmsCredentials:
 
 class OrangeCredentialsStore:
     def load(self):
-        """The saved credentials, or None when nothing was saved (or the Keychain cannot be read)."""
-        try:
-            completed_command = subprocess.run(
-                ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE_NAME, "-a", ORANGE_KEYCHAIN_ACCOUNT_NAME, "-w"],
-                capture_output=True, text=True, timeout=KEYCHAIN_COMMAND_TIMEOUT_SECONDS,
-            )
-        except subprocess.SubprocessError:
-            return None
-        if completed_command.returncode != 0:
+        """The saved credentials, or None when nothing was saved (or the secret store cannot be read)."""
+        saved_text = read_secret(ORANGE_KEYCHAIN_ACCOUNT_NAME)
+        if not saved_text:
             return None
         try:
-            saved_fields = json.loads(completed_command.stdout.strip())
-            return OrangeSmsCredentials(**saved_fields)
+            return OrangeSmsCredentials(**json.loads(saved_text))
         except (ValueError, TypeError):
             return None
 
     def save(self, credentials):
-        """Raises RuntimeError with a French message if the Keychain refuses."""
-        try:
-            completed_command = subprocess.run(
-                ["security", "add-generic-password", "-U", "-s", KEYCHAIN_SERVICE_NAME, "-a", ORANGE_KEYCHAIN_ACCOUNT_NAME,
-                 "-w", json.dumps(asdict(credentials))],
-                capture_output=True, text=True, timeout=KEYCHAIN_COMMAND_TIMEOUT_SECONDS,
-            )
-        except subprocess.SubprocessError as keychain_error:
-            raise RuntimeError(f"Trousseau d'accès injoignable : {keychain_error}") from keychain_error
-        if completed_command.returncode != 0:
-            raise RuntimeError(f"Le trousseau d'accès a refusé l'enregistrement : {completed_command.stderr.strip()}")
+        """Raises RuntimeError with a French message if the secret store refuses."""
+        write_secret(ORANGE_KEYCHAIN_ACCOUNT_NAME, json.dumps(asdict(credentials)))

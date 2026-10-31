@@ -8,7 +8,13 @@ Global Transports, contact-fetching APIs) may come much later; keep the core UI-
 
 ## Decisions (already made)
 
-- **Platform:** macOS only, one Mac (Apple Silicon M2). No Windows, no installers, no licensing concerns.
+- **Platform:** macOS (one Mac, Apple Silicon M2) **and Windows 11** (same codebase, branch `dev-windows-support`;
+  verified 2026-10-31: device status, balance, real send). OS differences go through `common/platform_support.py`
+  (`IS_WINDOWS`): libusb loading, no root helper on Windows (the dongle switches itself), `%APPDATA%\SMS Gateway`,
+  Credential Manager instead of Keychain (`common/secret_store.py`), `winsound`, `SetThreadExecutionState`.
+  On Windows the AT interface needs WinUSB bound to `MI_00` only (`scripts/windows/install_winusb_driver.ps1`, admin).
+  **Every Windows setup step is logged in `docs/WINDOWS_SETUP_NOTES.md`** — keep it up to date; it becomes the
+  automatic setup of the packaged app. No licensing concerns.
 - **Language / UI:** Python + **PySide6 (Qt)**, a single process. Reuses the proven raw-USB code directly.
   Rejected: Vue served over HTTP, Swift rewrite, Electron/Tauri with a sidecar.
 - **Architecture:** UI → services → dongle manager (one thread owning all USB) → device layer (pyusb/AT).
