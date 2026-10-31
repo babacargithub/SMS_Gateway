@@ -424,22 +424,34 @@ class DongleMonitor(QThread):
             if self.missed_replies[usb_location] >= MISSED_REPLIES_BEFORE_RESET:
                 self._drop_connection(usb_location)  # reconnects on the next scan
 
+    def _handle_cdrom_on_windows(self, usb_location, cdrom_device, first_seen_at):
+        """No helper and no privilege on Windows: the app sends the switch message itself (WinUSB is bound to the CD-ROM
+        mode by the installer's driver package), retrying every few seconds. Where Huawei's own software holds the CD-ROM
+        mode the send fails, but that software switches the dongle by itself: only after the grace period is it an error."""
+        if time.time() >= self.next_switch_attempt_at.get(usb_location, 0):
+            self.next_switch_attempt_at[usb_location] = time.time() + RETRY_SWITCH_AFTER_SECONDS
+            try:
+                dongle.switch_cdrom_dongle_in_process(cdrom_device)
+                self.last_switch_error.pop(usb_location, None)
+                logging.info("Mode switch message sent to the dongle at %s", usb_location)
+            except RuntimeError as switch_error:
+                self.last_switch_error[usb_location] = str(switch_error)
+                logging.warning("Mode switch failed at %s: %s", usb_location, switch_error)
+        if time.time() - first_seen_at < MODE_SWITCHER_GRACE_SECONDS:
+            self.current_statuses[usb_location] = DongleStatus(usb_location, dongle.STATE_SWITCHING)
+            return
+        self.current_statuses[usb_location] = DongleStatus(
+            usb_location,
+            dongle.STATE_ERROR,
+            error_message="Le dongle est resté en mode CD-ROM : débranchez-le puis rebranchez-le. Si cela continue, "
+            "réinstallez SMS Gateway.",
+        )
+
     def _handle_cdrom(self, usb_location, cdrom_device):
         """Ask the root helper (mode_switcher/) to switch the dongle, retrying every few seconds, and report progress."""
         first_seen_at = self.cdrom_first_seen_at.setdefault(usb_location, time.time())
         if IS_WINDOWS:
-            # Verified on the Windows PC: the dongle switches itself to modem mode a few seconds after being plugged in
-            # (no helper, no root). If it stays a CD-ROM, only a replug helps.
-            seconds_since_first_seen = time.time() - first_seen_at
-            self.current_statuses[usb_location] = (
-                DongleStatus(usb_location, dongle.STATE_DETECTED)
-                if seconds_since_first_seen < MODE_SWITCHER_GRACE_SECONDS
-                else DongleStatus(
-                    usb_location,
-                    dongle.STATE_ERROR,
-                    error_message="Le dongle est resté en mode CD-ROM : débranchez-le puis rebranchez-le",
-                )
-            )
+            self._handle_cdrom_on_windows(usb_location, cdrom_device, first_seen_at)
             return
         if not dongle.is_mode_switch_helper_installed():
             self.current_statuses[usb_location] = DongleStatus(

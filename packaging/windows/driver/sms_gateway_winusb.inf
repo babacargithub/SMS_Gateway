@@ -1,0 +1,53 @@
+; SMS Gateway - binds Microsoft's built-in WinUSB driver to the Huawei USB dongle so the app can use it through libusb.
+; No driver binary is shipped: everything comes from the inbox winusb.inf (Include/Needs).
+;
+;   USB\VID_12D1&PID_14FE        dongle in CD-ROM mode: the app sends the Huawei "switch to modem" message itself
+;                                (on PCs where Huawei's own software is installed, its signed driver ranks higher and
+;                                does the switch instead; both end in modem mode).
+;   USB\VID_12D1&PID_151D&MI_00  modem mode, interface 0 = the AT command port.
+;
+; Interface 3 (new-SMS announcements) is deliberately NOT listed: with Huawei's ew_usbenumfilter installed, libusb mixes
+; up two WinUSB interfaces of this dongle and interface 0 stops working (see docs/WINDOWS_SETUP_NOTES.md).
+;
+; The catalog (.cat) is created and signed ON THE TARGET PC by install_dongle_driver.ps1 with a certificate unique to
+; that PC, whose private key is deleted right after signing. Keep this file pure ASCII.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49f0-BC3D-A4FF138216D6}
+Provider    = %ProviderName%
+DriverVer   = 10/31/2026,1.0.0.0
+CatalogFile = sms_gateway_winusb.cat
+PnpLockdown = 1
+
+[Manufacturer]
+%ProviderName% = HuaweiDongles, NTamd64, NTarm64
+
+[HuaweiDongles.NTamd64]
+%CdromModeDescription%  = WinUsbInstall, USB\VID_12D1&PID_14FE
+%AtPortDescription%     = WinUsbInstall, USB\VID_12D1&PID_151D&MI_00
+
+[HuaweiDongles.NTarm64]
+%CdromModeDescription%  = WinUsbInstall, USB\VID_12D1&PID_14FE
+%AtPortDescription%     = WinUsbInstall, USB\VID_12D1&PID_151D&MI_00
+
+[WinUsbInstall]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[WinUsbInstall.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[WinUsbInstall.HW]
+AddReg = WinUsbDeviceInterfaceAddReg
+
+[WinUsbDeviceInterfaceAddReg]
+; libusb finds WinUSB devices through this device interface ("Entity not found" without it).
+HKR,,DeviceInterfaceGUIDs,0x10000,"{8C3E9D4A-5B1F-4E62-9A7D-2F6B1C0E5A13}"
+
+[Strings]
+ProviderName         = "SMS Gateway"
+CdromModeDescription = "Cle Huawei - mode CD-ROM (SMS Gateway)"
+AtPortDescription    = "Cle Huawei - port de commandes (SMS Gateway)"

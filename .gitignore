@@ -3,3 +3,9 @@ __pycache__/
 *.db
 *.sqlite3
 .DS_Store
+
+# Windows packaging outputs
+packaging/windows/build/
+packaging/windows/build_assets/
+packaging/windows/dist/
+packaging/windows/driver/*.cat

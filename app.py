@@ -1,3 +1,5 @@
+import logging
+import platform
 import sys
 
 from PySide6.QtCore import QLibraryInfo, QLocale, Qt, QTranslator
@@ -32,6 +34,7 @@ from devices.dongle import STATE_READY
 from sim.mobile_operators import identify_operator, load_operators
 from sim.sim_page import SimPage
 from common.app_icon import build_application_icon
+from common.app_logging import configure_application_logging
 from common.sidebar import SIDEBAR_SECTION_NAMES, Sidebar
 
 
@@ -151,6 +154,8 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    configure_application_logging()
+    logging.info("SMS Gateway starting (Python %s, %s)", platform.python_version(), platform.platform())
     application = QApplication(sys.argv)
     application.setApplicationName("SMS Gateway")
     application.setWindowIcon(build_application_icon())  # also the Dock icon on macOS

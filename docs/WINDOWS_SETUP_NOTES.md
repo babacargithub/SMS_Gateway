@@ -17,8 +17,9 @@ to prepare a new PC automatically.
 Data folder on Windows: `%APPDATA%\SMS Gateway` (database, `operators.json`). Secrets (Orange credentials, Globe
 Transports token): Windows Credential Manager, generic credentials `SMS Gateway/<account>`.
 
-Still to decide for the installer: re-run step 3 automatically when the dongle is plugged into another USB port
-(the binding belongs to the port's instance id), and what to do on a PC without the old Huawei drivers (see below).
+**Automated since 2026-10-31 (log entry 18):** the installer `SMS_Gateway_Setup_<version>.exe` does step 3 for every
+USB port with a signed driver package (no prompt after install), and the app switches CD-ROM mode itself (step 2 on
+PCs without Huawei software). Step 1 is bundled. Remaining unknown: the app-side mode switch (not yet verified).
 
 ## Hardware facts on Windows
 
@@ -84,3 +85,31 @@ Still to decide for the installer: re-run step 3 automatically when the dongle i
 17. **Receiving verified by the owner:** an SMS sent to the dongle's SIM appeared in Réception (read by the timer, no
     interface 3). Still to check on Windows: long/accented SMS (PDU mode), Orange gateway credentials in the Credential
     Manager, Globe Transports login.
+18. **Packaging for a non-technical recipient** (owner's choice: the installer sets the driver up; tests on this PC only).
+    - **Driver package** `packaging/windows/driver/sms_gateway_winusb.inf`: WinUSB (inbox, `Include=winusb.inf`) for
+      `USB\VID_12D1&PID_14FE` (CD-ROM mode) and `USB\VID_12D1&PID_151D&MI_00` (AT port), with `DeviceInterfaceGUIDs`
+      in the INF. Matching hardware IDs → no « pilote incompatible » warning, works on every USB port.
+    - **Signing on the target PC** (`packaging/windows/install_dongle_driver.ps1`, run elevated by the installer):
+      `New-SelfSignedCertificate` (unique per PC, non-exportable) → public part into LocalMachine Root +
+      TrustedPublisher → `New-FileCatalog` + `Set-AuthenticodeSignature` → private key deleted → `pnputil /add-driver
+      /install`. **Tested here: Windows accepted the package** (`oem64.inf`); MI_00 moved to it and kept working.
+      First run reported « UnknownError » because the catalog was signed before the certificate was trusted → order
+      fixed (trust first, then sign, and the script now fails if the signature is not « Valid »).
+      `-Uninstall` removes the package (`Get-WindowsDriver` → `pnputil /delete-driver /uninstall /force`) and the certs.
+    - **Surprise:** on this PC our package also took the CD-ROM mode `14FE` (instead of Huawei's `ew_hwusbdev`,
+      `oem55.inf`; change pending until replug/reboot). So the app must now do the switch itself here too, which lets
+      us test the « clean PC » path on this PC.
+    - **App-side mode switch on Windows:** `dongle.switch_cdrom_dongle_in_process` sends the Huawei message (same bytes
+      as the Mac helper) through WinUSB, no admin; the monitor retries every 20 s, shows « Changement de mode », and
+      an error after 25 s. **Not yet verified** (needs an unplug/replug with the new driver).
+    - **Log file** `%APPDATA%\SMS Gateway\logs\sms_gateway.log` (rotating, uncaught exceptions included): the only
+      trace in the packaged app, which has no console.
+    - **Build** (`packaging/windows/build_windows_installer.ps1`): icon (.ico from the app's SVG) → PyInstaller one
+      folder, no console (`sms_gateway.spec`) → Inno Setup 6 (`sms_gateway_setup.iss`, French, admin, runs the driver
+      script after copying files, French error message with the log path if it fails, uninstaller removes the driver).
+      Build tools on this PC: `pip install --user pyinstaller` (6.22.3), `winget install JRSoftware.InnoSetup --scope
+      user`. Output: `packaging/windows/dist/SMS_Gateway_Setup_1.0.0.exe` (35 MB; app folder 117 MB).
+      PyInstaller warning « No backend available » is harmless: `libusb-1.0.dll` is bundled (checked).
+      The `.iss` must be UTF-8 **with BOM** (French accents).
+    - Packaged exe started on this PC: window opens, log written. Dongle not yet checked in the packaged app.
+

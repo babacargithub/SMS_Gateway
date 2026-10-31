@@ -18,6 +18,9 @@ import usb.util
 HUAWEI_VENDOR_ID = 0x12D1
 CDROM_PRODUCT_ID = 0x14FE
 MODEM_PRODUCT_ID = 0x151D
+# USB mass-storage command (Huawei "rewind" SCSI 0x11 0x06) that makes the dongle re-enumerate as a modem, about 10 s later.
+# Same bytes as mode_switcher/dongle_mode_switcher.py (macOS root helper).
+MODE_SWITCH_MESSAGE = bytes.fromhex("55534243123456780000000000000011062000000100000000000000000000")
 LIBUSB_LIBRARY_PATH = "/opt/homebrew/lib/libusb-1.0.dylib"
 VENDOR_SPECIFIC_INTERFACE_CLASS = 0xFF
 # On Windows an interface without the WinUSB driver cannot be claimed: libusb answers LIBUSB_ERROR_NOT_SUPPORTED, which
@@ -153,6 +156,27 @@ def switch_dongles_to_modem_mode_through_helper():
         helper_output = (completed_process.stderr or "").strip().splitlines()
         last_helper_line = helper_output[-1] if helper_output else ""
         raise RuntimeError(f"Échec du changement de mode : {last_helper_line}")
+
+
+def switch_cdrom_dongle_in_process(cdrom_usb_device):
+    """Windows: send the Huawei "switch to modem mode" message from the app itself. No privilege is needed because the
+    installer bound WinUSB to the CD-ROM mode (packaging/windows/driver/sms_gateway_winusb.inf); on a PC where Huawei's
+    own software holds that mode instead, opening fails and Huawei's driver does the switch by itself.
+    Same message as mode_switcher/dongle_mode_switcher.py (macOS). Raises RuntimeError with a French message."""
+    try:
+        interface_zero = cdrom_usb_device.get_active_configuration()[(0, 0)]
+        bulk_out_endpoint = usb.util.find_descriptor(
+            interface_zero,
+            custom_match=lambda endpoint: usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_OUT,
+        )
+        if bulk_out_endpoint is None:
+            raise RuntimeError("Le dongle n'a pas l'interface attendue pour changer de mode")
+        usb.util.claim_interface(cdrom_usb_device, 0)
+        bulk_out_endpoint.write(MODE_SWITCH_MESSAGE, timeout=2000)
+    except INTERFACE_NOT_CLAIMABLE_ERRORS as switch_error:
+        raise RuntimeError(f"Impossible d'envoyer le changement de mode au dongle : {switch_error}") from switch_error
+    finally:
+        usb.util.dispose_resources(cdrom_usb_device)
 
 
 def signal_value_to_dbm(csq_value):
